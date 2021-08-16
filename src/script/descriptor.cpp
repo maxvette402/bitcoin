@@ -772,6 +772,7 @@ public:
     std::optional<int64_t> MaxSatisfactionWeight(bool) const override { return {}; }
 
     std::optional<int64_t> MaxSatisfactionElems() const override { return {}; }
+<<<<<<< HEAD
 
     // NOLINTNEXTLINE(misc-no-recursion)
     void GetPubKeys(std::set<CPubKey>& pubkeys, std::set<CExtPubKey>& ext_pubs) const override
@@ -786,6 +787,11 @@ public:
             arg->GetPubKeys(pubkeys, ext_pubs);
         }
     }
+||||||| parent of 657176b834d (descriptors: Add DescriptorImpl::Clone)
+=======
+
+    virtual std::unique_ptr<DescriptorImpl> Clone() const = 0;
+>>>>>>> 657176b834d (descriptors: Add DescriptorImpl::Clone)
 };
 
 /** A parsed addr(A) descriptor. */
@@ -807,6 +813,10 @@ public:
     bool ToPrivateString(const SigningProvider& arg, std::string& out) const final { return false; }
 
     std::optional<int64_t> ScriptSize() const override { return GetScriptForDestination(m_destination).size(); }
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<AddressDescriptor>(m_destination);
+    }
 };
 
 /** A parsed raw(H) descriptor. */
@@ -830,6 +840,11 @@ public:
     bool ToPrivateString(const SigningProvider& arg, std::string& out) const final { return false; }
 
     std::optional<int64_t> ScriptSize() const override { return m_script.size(); }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<RawDescriptor>(m_script);
+    }
 };
 
 /** A parsed pk(P) descriptor. */
@@ -865,6 +880,11 @@ public:
     }
 
     std::optional<int64_t> MaxSatisfactionElems() const override { return 1; }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<PKDescriptor>(m_pubkey_args.at(0)->Clone(), m_xonly);
+    }
 };
 
 /** A parsed pkh(P) descriptor. */
@@ -894,6 +914,11 @@ public:
     }
 
     std::optional<int64_t> MaxSatisfactionElems() const override { return 2; }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<PKHDescriptor>(m_pubkey_args.at(0)->Clone());
+    }
 };
 
 /** A parsed wpkh(P) descriptor. */
@@ -923,6 +948,11 @@ public:
     }
 
     std::optional<int64_t> MaxSatisfactionElems() const override { return 2; }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<WPKHDescriptor>(m_pubkey_args.at(0)->Clone());
+    }
 };
 
 /** A parsed combo(P) descriptor. */
@@ -947,6 +977,10 @@ protected:
 public:
     ComboDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Vector(std::move(prov)), "combo") {}
     bool IsSingleType() const final { return false; }
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<ComboDescriptor>(m_pubkey_args.at(0)->Clone());
+    }
 };
 
 /** A parsed multi(...) or sortedmulti(...) descriptor */
@@ -985,6 +1019,14 @@ public:
     }
 
     std::optional<int64_t> MaxSatisfactionElems() const override { return 1 + m_threshold; }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        std::vector<std::unique_ptr<PubkeyProvider>> providers;
+        providers.reserve(m_pubkey_args.size());
+        std::transform(m_pubkey_args.begin(), m_pubkey_args.end(), providers.begin(), [](const std::unique_ptr<PubkeyProvider>& p) { return p->Clone(); });
+        return std::make_unique<MultisigDescriptor>(m_threshold, std::move(providers), m_sorted);
+    }
 };
 
 /** A parsed (sorted)multi_a(...) descriptor. Always uses x-only pubkeys. */
@@ -1021,6 +1063,16 @@ public:
     }
 
     std::optional<int64_t> MaxSatisfactionElems() const override { return m_pubkey_args.size(); }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        std::vector<std::unique_ptr<PubkeyProvider>> providers;
+        providers.reserve(m_pubkey_args.size());
+        for (const auto& arg : m_pubkey_args) {
+            providers.push_back(arg->Clone());
+        }
+        return std::make_unique<MultiADescriptor>(m_threshold, std::move(providers), m_sorted);
+    }
 };
 
 /** A parsed sh(...) descriptor. */
@@ -1066,6 +1118,11 @@ public:
         if (const auto sub_elems = m_subdescriptor_args[0]->MaxSatisfactionElems()) return 1 + *sub_elems;
         return {};
     }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<SHDescriptor>(m_subdescriptor_args.at(0)->Clone());
+    }
 };
 
 /** A parsed wsh(...) descriptor. */
@@ -1101,6 +1158,11 @@ public:
     std::optional<int64_t> MaxSatisfactionElems() const override {
         if (const auto sub_elems = m_subdescriptor_args[0]->MaxSatisfactionElems()) return 1 + *sub_elems;
         return {};
+    }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<WSHDescriptor>(m_subdescriptor_args.at(0)->Clone());
     }
 };
 
@@ -1166,6 +1228,14 @@ public:
     std::optional<int64_t> MaxSatisfactionElems() const override {
         // FIXME: See above, we assume keypath spend.
         return 1;
+    }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        std::vector<std::unique_ptr<DescriptorImpl>> subdescs;
+        subdescs.reserve(m_subdescriptor_args.size());
+        std::transform(m_subdescriptor_args.begin(), m_subdescriptor_args.end(), subdescs.begin(), [](const std::unique_ptr<DescriptorImpl>& d) { return d->Clone(); });
+        return std::make_unique<TRDescriptor>(m_pubkey_args.at(0)->Clone(), std::move(subdescs), m_depths);
     }
 };
 
@@ -1285,6 +1355,16 @@ public:
     std::optional<int64_t> MaxSatisfactionElems() const override {
         return m_node->GetStackSize();
     }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        std::vector<std::unique_ptr<PubkeyProvider>> providers;
+        providers.reserve(m_pubkey_args.size());
+        for (const auto& arg : m_pubkey_args) {
+            providers.push_back(arg->Clone());
+        }
+        return std::make_unique<MiniscriptDescriptor>(std::move(providers), miniscript::MakeNodeRef<uint32_t>(*m_node));
+    }
 };
 
 /** A parsed rawtr(...) descriptor. */
@@ -1314,6 +1394,11 @@ public:
     std::optional<int64_t> MaxSatisfactionElems() const override {
         // See above, we assume keypath spend.
         return 1;
+    }
+
+    std::unique_ptr<DescriptorImpl> Clone() const override
+    {
+        return std::make_unique<RawTRDescriptor>(m_pubkey_args.at(0)->Clone());
     }
 };
 
