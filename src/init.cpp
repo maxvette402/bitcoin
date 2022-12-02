@@ -949,9 +949,6 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     if (args.GetIntArg("-prune", 0)) {
         if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX))
             return InitError(_("Prune mode is incompatible with -txindex."));
-        if (args.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX)) {
-            return InitError(_("Prune mode is incompatible with -txospenderindex."));
-        }
         if (args.GetBoolArg("-reindex-chainstate", false)) {
             return InitError(_("Prune mode is incompatible with -reindex-chainstate. Use full -reindex instead."));
         }
@@ -1653,10 +1650,6 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     }
 
     if (args.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX)) {
-        if (!args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
-            return InitError(_("-txospenderindex requires -txindex."));
-        }
-
         g_txospenderindex = std::make_unique<TxoSpenderIndex>(interfaces::MakeChain(node), cache_sizes.txospender_index, false, chainman.m_blockman.m_reindexing);
         node.indexes.emplace_back(g_txospenderindex.get());
     }
