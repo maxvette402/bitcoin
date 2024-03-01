@@ -104,5 +104,40 @@ static bool EquivalentResult(const SelectionResult& a, const SelectionResult& b)
     return ret.first == a_amts.end() && ret.second == b_amts.end();
 }
 
+static void TestBnBSuccess(std::string test_title, std::vector<COutput>& utxo_pool, const CAmount& selection_target, const std::vector<CAmount>& expected_input_amounts, const CFeeRate& feerate = default_cs_params.m_effective_feerate)
+{
+    SelectionResult expected_result(CAmount(0), SelectionAlgorithm::BNB);
+    CAmount expected_amount = 0;
+    for (int input_amount : expected_input_amounts) {
+        OutputGroup group;
+        COutput coin = MakeCoin(input_amount, true, 0, feerate);
+        expected_amount += coin.txout.nValue;
+        group.Insert(std::make_shared<COutput>(coin), /*ancestors=*/ 0, /*descendants=*/ 0);
+        expected_result.AddInput(group);
+    }
+
+    const auto result = SelectCoinsBnB(GroupCoins(utxo_pool), selection_target, /*cost_of_change=*/ default_cs_params.m_cost_of_change, /*max_weight=*/MAX_STANDARD_TX_WEIGHT);
+    BOOST_CHECK_MESSAGE(result, "BnB-Success: " + test_title);
+    BOOST_CHECK(EquivalentResult(expected_result, *result));
+    BOOST_CHECK_EQUAL(result->GetSelectedValue(), expected_amount);
+    expected_result.Clear();
+}
+
+BOOST_AUTO_TEST_CASE(bnb_test)
+{
+    std::vector<COutput> utxo_pool;
+    AddCoins(utxo_pool, {1 * CENT, 3 * CENT, 5 * CENT});
+
+    // Simple success cases
+    TestBnBSuccess("Select smallest UTXO", utxo_pool, /*selection_target=*/ 1 * CENT, /*expected_input_amounts=*/ {1 * CENT});
+    TestBnBSuccess("Select middle UTXO", utxo_pool, /*selection_target=*/ 3 * CENT, /*expected_input_amounts=*/ {3 * CENT});
+    TestBnBSuccess("Select biggest UTXO", utxo_pool, /*selection_target=*/ 5 * CENT, /*expected_input_amounts=*/ {5 * CENT});
+    TestBnBSuccess("Select two UTXOs", utxo_pool, /*selection_target=*/ 4 * CENT, /*expected_input_amounts=*/ {1 * CENT, 3 * CENT});
+    TestBnBSuccess("Select all UTXOs", utxo_pool, /*selection_target=*/ 9 * CENT, /*expected_input_amounts=*/ {1 * CENT, 3 * CENT, 5 * CENT});
+
+    // BnB finds changeless solution while overshooting by up to cost_of_change
+    TestBnBSuccess("Select upper bound", utxo_pool, /*selection_target=*/ 9 * CENT - default_cs_params.m_cost_of_change, /*expected_input_amounts=*/ {1 * CENT, 3 * CENT, 5 * CENT});
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 } // namespace wallet
