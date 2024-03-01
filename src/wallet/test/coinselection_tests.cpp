@@ -71,6 +71,13 @@ static void AddCoins(std::vector<COutput>& utxo_pool, std::vector<CAmount> coins
     }
 }
 
+/** Make multiple coins that share the same effective value */
+static void AddDuplicateCoins(std::vector<COutput>& utxo_pool, int count, int amount) {
+    for (int i = 0 ; i < count; ++i) {
+        utxo_pool.push_back(MakeCoin(amount));
+    }
+}
+
 /** Group available coins into OutputGroups */
 inline std::vector<OutputGroup>& GroupCoins(const std::vector<COutput>& available_coins, const CoinSelectionParams& cs_params = default_cs_params, bool subtract_fee_outputs = false)
 {
@@ -137,6 +144,12 @@ BOOST_AUTO_TEST_CASE(bnb_test)
 
     // BnB finds changeless solution while overshooting by up to cost_of_change
     TestBnBSuccess("Select upper bound", utxo_pool, /*selection_target=*/ 9 * CENT - default_cs_params.m_cost_of_change, /*expected_input_amounts=*/ {1 * CENT, 3 * CENT, 5 * CENT});
+
+    // Test skipping of equivalent input sets
+    std::vector<COutput> clone_pool;
+    AddCoins(clone_pool, {2 * CENT, 7 * CENT, 7 * CENT});
+    AddDuplicateCoins(clone_pool, 50'000, 5 * CENT);
+    TestBnBSuccess("Skip equivalent input sets", clone_pool, /*selection_target=*/ 16 * CENT, /*expected_input_amounts=*/ {2 * CENT, 7 * CENT, 7 * CENT});
 }
 
 BOOST_AUTO_TEST_CASE(bnb_feerate_sensitivity_test)
