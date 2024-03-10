@@ -350,6 +350,7 @@ private:
     void RandomSeed() noexcept;
 
 public:
+    /** Construct a FastRandomContext with GetRandHash()-based entropy (or zero key if fDeterministic). */
     explicit FastRandomContext(bool fDeterministic = false) noexcept;
 
     /** Initialize with explicit seed (only for testing) */
