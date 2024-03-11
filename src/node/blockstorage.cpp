@@ -640,7 +640,7 @@ void BlockManager::CleanupBlockRevFiles() const
             if (path.substr(0, 3) == "blk") {
                 mapBlockFiles[path.substr(3, 5)] = it->path();
             } else if (path.substr(0, 3) == "rev") {
-                remove(it->path());
+                fs::remove(it->path());
             }
         }
     }
@@ -655,7 +655,7 @@ void BlockManager::CleanupBlockRevFiles() const
             nContigCounter++;
             continue;
         }
-        remove(item.second);
+        fs::remove(item.second);
     }
 }
 

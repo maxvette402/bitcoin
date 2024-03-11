@@ -13,11 +13,17 @@
 #include <iosfwd>
 #include <limits>
 
+//! Used to replace the implementation of the FileCommit function.
+extern std::function<bool(FILE* file)> g_mock_file_commit;
+
 /**
  * Ensure file contents are fully committed to disk, using a platform-specific
  * feature analogous to fsync().
  */
 bool FileCommit(FILE* file);
+
+//! Used to replace the implementation of the DirectoryCommit function.
+extern std::function<void(const fs::path&)> g_mock_dir_commit;
 
 /**
  * Sync directory contents. This is required on some environments to ensure that
@@ -25,8 +31,16 @@ bool FileCommit(FILE* file);
  */
 void DirectoryCommit(const fs::path& dirname);
 
+//! Used to replace the implementation of the TruncateFile function.
+extern std::function<bool(FILE*, unsigned int)> g_mock_truncate_file;
+
 bool TruncateFile(FILE* file, unsigned int length);
+
 int RaiseFileDescriptorLimit(int nMinFD);
+
+//! Used to replace the implementation of the AllocateFileRange function.
+extern std::function<void(FILE*, unsigned int, unsigned int)> g_mock_allocate_file_range;
+
 void AllocateFileRange(FILE* file, unsigned int offset, unsigned int length);
 
 /**
@@ -44,6 +58,10 @@ enum class LockResult {
 [[nodiscard]] LockResult LockDirectory(const fs::path& directory, const fs::path& lockfile_name, bool probe_only = false);
 } // namespace util
 void UnlockDirectory(const fs::path& directory, const fs::path& lockfile_name);
+
+//! Used to replace the implementation of the CheckDiskSpace function.
+extern std::function<bool(const fs::path&, uint64_t)> g_mock_check_disk_space;
+
 bool CheckDiskSpace(const fs::path& dir, uint64_t additional_bytes = 0);
 
 /** Get the size of a file by scanning it.
