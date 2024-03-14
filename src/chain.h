@@ -174,7 +174,7 @@ public:
     //! to the genesis block or an assumeutxo snapshot block have reached the
     //! VALID_TRANSACTIONS level.
     //! Change to 64-bit type before 2024 (assuming worst case of 60 byte transactions).
-    unsigned int nChainTx{0};
+    uint64_t nChainTx{0};
 
     //! Verification status of this block. See enum BlockStatus
     //!
