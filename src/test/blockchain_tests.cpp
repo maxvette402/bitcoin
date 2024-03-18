@@ -77,8 +77,8 @@ BOOST_AUTO_TEST_CASE(get_difficulty_for_very_high_target)
 BOOST_AUTO_TEST_CASE(num_chain_tx_max)
 {
     std::unique_ptr<CBlockIndex> block_index{CreateBlockIndexWithNbits(0x1f111111)};
-    block_index->nChainTx = std::numeric_limits<uint64_t>::max();
-    BOOST_CHECK_EQUAL(block_index->nChainTx, std::numeric_limits<uint64_t>::max());
+    block_index->m_chain_tx_count = std::numeric_limits<uint64_t>::max();
+    BOOST_CHECK_EQUAL(block_index->m_chain_tx_count, std::numeric_limits<uint64_t>::max());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
