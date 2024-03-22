@@ -5,7 +5,6 @@
 
 #include <policy/fees.h>
 
-#include <clientversion.h>
 #include <common/system.h>
 #include <consensus/amount.h>
 #include <kernel/mempool_entry.h>
@@ -957,11 +956,15 @@ void CBlockPolicyEstimator::FlushFeeEstimates()
     }
 }
 
+// The current format written, and the version required to read. Must be
+// increased to at least 279900+1 on the next breaking change.
+constexpr int CURRENT_FILE_VERSION{149900};
+
 bool CBlockPolicyEstimator::Write(AutoFile& fileout) const
 {
     try {
         LOCK(m_cs_fee_estimator);
-        fileout << 149900; // version required to read: 0.14.99 or later
+        fileout << CURRENT_FILE_VERSION;
         fileout << 279900; // version that wrote the file. Used to be CLIENT_VERSION. Currently unused dummy field.
         fileout << nBestSeenHeight;
         if (BlockSpan() > HistoricalBlockSpan()/2) {
@@ -988,7 +991,7 @@ bool CBlockPolicyEstimator::Read(AutoFile& filein)
         LOCK(m_cs_fee_estimator);
         int nVersionRequired, dummy_version_that_wrote;
         filein >> nVersionRequired >> dummy_version_that_wrote;
-        if (nVersionRequired > CLIENT_VERSION) {
+        if (nVersionRequired > CURRENT_FILE_VERSION) {
             throw std::runtime_error(strprintf("up-version (%d) fee estimate file", nVersionRequired));
         }
 
@@ -997,9 +1000,9 @@ bool CBlockPolicyEstimator::Read(AutoFile& filein)
         unsigned int nFileBestSeenHeight;
         filein >> nFileBestSeenHeight;
 
-        if (nVersionRequired < 149900) {
+        if (nVersionRequired < CURRENT_FILE_VERSION) {
             LogPrintf("%s: incompatible old fee estimation data (non-fatal). Version: %d\n", __func__, nVersionRequired);
-        } else { // New format introduced in 149900
+        } else { // nVersionRequired == CURRENT_FILE_VERSION
             unsigned int nFileHistoricalFirst, nFileHistoricalBest;
             filein >> nFileHistoricalFirst >> nFileHistoricalBest;
             if (nFileHistoricalFirst > nFileHistoricalBest || nFileHistoricalBest > nFileBestSeenHeight) {
