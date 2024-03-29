@@ -621,10 +621,10 @@ const CBlockIndex* BlockManager::GetFirstStoredBlock(const CBlockIndex& upper_bl
     return last_block;
 }
 
-bool BlockManager::CheckBlockDataAvailability(const CBlockIndex& upper_block, const CBlockIndex& lower_block)
+bool BlockManager::CheckBlockDataAvailability(const CBlockIndex& upper_block, const CBlockIndex& lower_block, uint32_t status_mask)
 {
-    if (!(upper_block.nStatus & BLOCK_HAVE_DATA)) return false;
-    return GetFirstStoredBlock(upper_block, &lower_block) == &lower_block;
+    if (!(upper_block.nStatus & status_mask)) return false;
+    return GetFirstStoredBlock(upper_block, &lower_block, status_mask) == &lower_block;
 }
 
 // If we're using -prune with -reindex, then delete block files that will be ignored by the
