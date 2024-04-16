@@ -1136,6 +1136,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
 
     // Remove conflicting transactions from the mempool
+    CTxMemPool::Entries all_removals;
     for (CTxMemPool::txiter it : m_subpackage.m_all_conflicts)
     {
         LogPrint(BCLog::MEMPOOL, "replacing tx %s (wtxid=%s) with %s (wtxid=%s) for %s additional fees, %d delta bytes\n",
@@ -1155,8 +1156,9 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
                 entry->GetFee()
         );
         m_subpackage.m_replaced_transactions.push_back(it->GetSharedTx());
+        all_removals.push_back(it);
     }
-    m_pool.RemoveStaged(m_subpackage.m_all_conflicts, MemPoolRemovalReason::REPLACED);
+    m_pool.RemoveStaged(all_removals, MemPoolRemovalReason::REPLACED);
     // Don't attempt to process the same conflicts repeatedly during subpackage evaluation:
     // they no longer exist on subsequent calls to Finalize() post-RemoveStaged
     m_subpackage.m_all_conflicts.clear();
