@@ -13,20 +13,16 @@
 
 /** Sort an array of silent payment recipients. This is used to group recipients by scan pubkey to
  *  ensure the correct values of k are used when creating multiple outputs for a recipient. */
-static int secp256k1_silentpayments_recipient_sort_cmp(const void* pk1, const void* pk2, void *cmp_data) {
-    return secp256k1_ec_pubkey_cmp(
-        ((secp256k1_ec_pubkey_sort_cmp_data*)cmp_data)->ctx,
+static int secp256k1_silentpayments_recipient_sort_cmp(const void* pk1, const void* pk2, void *ctx) {
+    return secp256k1_ec_pubkey_cmp((secp256k1_context *)ctx,
         &(*(const secp256k1_silentpayments_recipient **)pk1)->scan_pubkey,
         &(*(const secp256k1_silentpayments_recipient **)pk2)->scan_pubkey
     );
 }
 
 int secp256k1_silentpayments_recipient_sort(const secp256k1_context* ctx, const secp256k1_silentpayments_recipient **recipients, size_t n_recipients) {
-    secp256k1_ec_pubkey_sort_cmp_data cmp_data;
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(recipients != NULL);
-
-    cmp_data.ctx = ctx;
 
     /* Suppress wrong warning (fixed in MSVC 19.33) */
     #if defined(_MSC_VER) && (_MSC_VER < 1933)
@@ -34,7 +30,7 @@ int secp256k1_silentpayments_recipient_sort(const secp256k1_context* ctx, const 
     #pragma warning(disable: 4090)
     #endif
 
-    secp256k1_hsort(recipients, n_recipients, sizeof(*recipients), secp256k1_silentpayments_recipient_sort_cmp, &cmp_data);
+    secp256k1_hsort(recipients, n_recipients, sizeof(*recipients), secp256k1_silentpayments_recipient_sort_cmp, (void *)ctx);
 
     #if defined(_MSC_VER) && (_MSC_VER < 1933)
     #pragma warning(pop)
@@ -152,7 +148,7 @@ static void secp256k1_silentpayments_create_t_k(secp256k1_scalar *t_k_scalar, co
     secp256k1_scalar_set_b32(t_k_scalar, hash_ser, NULL);
 }
 
-int secp256k1_silentpayments_create_output_pubkey(const secp256k1_context *ctx, secp256k1_xonly_pubkey *P_output_xonly, const unsigned char *shared_secret33, const secp256k1_pubkey *receiver_spend_pubkey, unsigned int k) {
+int secp256k1_silentpayments_create_output_pubkey(const secp256k1_context *ctx, secp256k1_xonly_pubkey *P_output_xonly, const unsigned char *shared_secret33, const secp256k1_pubkey *recipient_spend_pubkey, unsigned int k) {
     secp256k1_ge P_output_ge;
     secp256k1_scalar t_k_scalar;
 
@@ -160,11 +156,11 @@ int secp256k1_silentpayments_create_output_pubkey(const secp256k1_context *ctx, 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(P_output_xonly != NULL);
     ARG_CHECK(shared_secret33 != NULL);
-    ARG_CHECK(receiver_spend_pubkey != NULL);
+    ARG_CHECK(recipient_spend_pubkey != NULL);
 
     /* Calculate and return P_output_xonly = B_spend + t_k * G */
     secp256k1_silentpayments_create_t_k(&t_k_scalar, shared_secret33, k);
-    secp256k1_pubkey_load(ctx, &P_output_ge, receiver_spend_pubkey);
+    secp256k1_pubkey_load(ctx, &P_output_ge, recipient_spend_pubkey);
     if (!secp256k1_eckey_pubkey_tweak_add(&P_output_ge, &t_k_scalar)) {
         return 0;
     }
@@ -196,6 +192,7 @@ int secp256k1_silentpayments_sender_create_outputs(
     /* Sanity check inputs. */
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(recipients != NULL);
+    ARG_CHECK(n_recipients >= 1);
     ARG_CHECK(secp256k1_ecmult_gen_context_is_built(&ctx->ecmult_gen_ctx));
     ARG_CHECK(plain_seckeys == NULL || n_plain_seckeys >= 1);
     ARG_CHECK(taproot_seckeys == NULL || n_taproot_seckeys >= 1);
@@ -210,22 +207,18 @@ int secp256k1_silentpayments_sender_create_outputs(
     /* Compute input private keys sum: a_sum = a_1 + a_2 + ... + a_n */
     a_sum_scalar = secp256k1_scalar_zero;
     for (i = 0; i < n_plain_seckeys; i++) {
-        int ret = secp256k1_scalar_set_b32_seckey(&addend, plain_seckeys[i]);
-        VERIFY_CHECK(ret);
-        (void)ret;
-
+        if (!secp256k1_scalar_set_b32_seckey(&addend, plain_seckeys[i])) {
+            return 0;
+        }
         secp256k1_scalar_add(&a_sum_scalar, &a_sum_scalar, &addend);
         VERIFY_CHECK(!secp256k1_scalar_is_zero(&a_sum_scalar));
     }
     /* private keys used for taproot outputs have to be negated if they resulted in an odd point */
     for (i = 0; i < n_taproot_seckeys; i++) {
         secp256k1_ge addend_point;
-        int ret = secp256k1_keypair_load(ctx, &addend, &addend_point, taproot_seckeys[i]);
-        VERIFY_CHECK(ret);
-        (void)ret;
-        /* declassify addend_point to allow using it as a branch point (this is fine because addend_point is not a secret) */
-        secp256k1_declassify(ctx, &addend_point, sizeof(addend_point));
-        secp256k1_fe_normalize_var(&addend_point.y);
+        if (!secp256k1_keypair_load(ctx, &addend, &addend_point, taproot_seckeys[i])) {
+            return 0;
+        }
         if (secp256k1_fe_is_odd(&addend_point.y)) {
             secp256k1_scalar_negate(&addend, &addend);
         }
@@ -278,20 +271,19 @@ static void secp256k1_silentpayments_sha256_init_label(secp256k1_sha256* hash) {
     hash->bytes = 64;
 }
 
-int secp256k1_silentpayments_recipient_create_label_tweak(const secp256k1_context *ctx, secp256k1_pubkey *label, unsigned char *label_tweak32, const unsigned char *receiver_scan_seckey, unsigned int m) {
+int secp256k1_silentpayments_recipient_create_label_tweak(const secp256k1_context *ctx, secp256k1_pubkey *label, unsigned char *label_tweak32, const unsigned char *recipient_scan_key, unsigned int m) {
     secp256k1_sha256 hash;
     unsigned char m_serialized[4];
 
     /* Sanity check inputs. */
     VERIFY_CHECK(ctx != NULL);
-    (void)ctx;
-    VERIFY_CHECK(label != NULL);
-    VERIFY_CHECK(label_tweak32 != NULL);
-    VERIFY_CHECK(receiver_scan_seckey != NULL);
+    ARG_CHECK(label != NULL);
+    ARG_CHECK(label_tweak32 != NULL);
+    ARG_CHECK(recipient_scan_key != NULL);
 
     /* Compute label_tweak = hash(ser_256(b_scan) || ser_32(m))  [sha256 with tag "BIP0352/Label"] */
     secp256k1_silentpayments_sha256_init_label(&hash);
-    secp256k1_sha256_write(&hash, receiver_scan_seckey, 32);
+    secp256k1_sha256_write(&hash, recipient_scan_key, 32);
     secp256k1_write_be32(m_serialized, m);
     secp256k1_sha256_write(&hash, m_serialized, sizeof(m_serialized));
     secp256k1_sha256_finalize(&hash, label_tweak32);
@@ -304,26 +296,26 @@ int secp256k1_silentpayments_recipient_create_label_tweak(const secp256k1_contex
     return 1;
 }
 
-int secp256k1_silentpayments_recipient_create_labelled_spend_pubkey(const secp256k1_context *ctx, secp256k1_pubkey *labeled_spend_pubkey, const secp256k1_pubkey *receiver_spend_pubkey, const secp256k1_pubkey *label) {
+int secp256k1_silentpayments_recipient_create_labelled_spend_pubkey(const secp256k1_context *ctx, secp256k1_pubkey *labelled_spend_pubkey, const secp256k1_pubkey *recipient_spend_pubkey, const secp256k1_pubkey *label) {
     secp256k1_ge B_m, label_addend;
     secp256k1_gej result_gej;
     secp256k1_ge result_ge;
 
     /* Sanity check inputs. */
     VERIFY_CHECK(ctx != NULL);
-    VERIFY_CHECK(labeled_spend_pubkey != NULL);
-    VERIFY_CHECK(receiver_spend_pubkey != NULL);
+    VERIFY_CHECK(labelled_spend_pubkey != NULL);
+    VERIFY_CHECK(recipient_spend_pubkey != NULL);
     VERIFY_CHECK(label != NULL);
 
     /* Calculate B_m = B_spend + label */
-    secp256k1_pubkey_load(ctx, &B_m, receiver_spend_pubkey);
+    secp256k1_pubkey_load(ctx, &B_m, recipient_spend_pubkey);
     secp256k1_pubkey_load(ctx, &label_addend, label);
     secp256k1_gej_set_ge(&result_gej, &B_m);
     secp256k1_gej_add_ge_var(&result_gej, &result_gej, &label_addend, NULL);
 
     /* Serialize B_m */
     secp256k1_ge_set_gej(&result_ge, &result_gej);
-    secp256k1_pubkey_save(labeled_spend_pubkey, &result_ge);
+    secp256k1_pubkey_save(labelled_spend_pubkey, &result_ge);
 
     return 1;
 }
@@ -358,11 +350,11 @@ int secp256k1_silentpayments_recipient_public_data_create(
     secp256k1_gej_set_infinity(&A_sum_gej);
     for (i = 0; i < n_plain_pubkeys; i++) {
         secp256k1_pubkey_load(ctx, &addend, plain_pubkeys[i]);
-        secp256k1_gej_add_ge(&A_sum_gej, &A_sum_gej, &addend);
+        secp256k1_gej_add_ge_var(&A_sum_gej, &A_sum_gej, &addend, NULL);
     }
     for (i = 0; i < n_xonly_pubkeys; i++) {
         secp256k1_xonly_pubkey_load(ctx, &addend, xonly_pubkeys[i]);
-        secp256k1_gej_add_ge(&A_sum_gej, &A_sum_gej, &addend);
+        secp256k1_gej_add_ge_var(&A_sum_gej, &A_sum_gej, &addend, NULL);
     }
     if (secp256k1_gej_is_infinity(&A_sum_gej)) {
         /* TODO: do we need a special error return code for this case? */
@@ -380,7 +372,7 @@ int secp256k1_silentpayments_recipient_public_data_create(
     return 1;
 }
 
-int secp256k1_silentpayments_recipient_public_data_load(const secp256k1_context *ctx, secp256k1_pubkey *pubkey, unsigned char *input_hash, const secp256k1_silentpayments_public_data *public_data) {
+static int secp256k1_silentpayments_recipient_public_data_load(const secp256k1_context *ctx, secp256k1_pubkey *pubkey, unsigned char *input_hash, const secp256k1_silentpayments_public_data *public_data) {
     int combined;
     size_t pubkeylen = 65;
     VERIFY_CHECK(ctx != NULL);
@@ -437,25 +429,29 @@ int secp256k1_silentpayments_recipient_scan_outputs(
     const secp256k1_context *ctx,
     secp256k1_silentpayments_found_output **found_outputs, size_t *n_found_outputs,
     const secp256k1_xonly_pubkey * const *tx_outputs, size_t n_tx_outputs,
-    const unsigned char *scan_key,
+    const unsigned char *recipient_scan_key,
     const secp256k1_silentpayments_public_data *public_data,
-    const secp256k1_pubkey *receiver_spend_pubkey,
+    const secp256k1_pubkey *recipient_spend_pubkey,
     const secp256k1_silentpayments_label_lookup label_lookup,
     const void *label_context
 ) {
     secp256k1_scalar t_k_scalar;
-    secp256k1_ge receiver_spend_pubkey_ge;
-    secp256k1_xonly_pubkey P_output_xonly;
+    secp256k1_ge label_ge, recipient_spend_pubkey_ge;
     secp256k1_pubkey A_sum;
+    secp256k1_xonly_pubkey P_output_xonly;
     unsigned char shared_secret[33];
-    size_t i, k, n_found;
+    unsigned char label_tweak32[32];
+    const unsigned char *label_tweak = label_tweak32;
+    size_t i, k, n_found, found_idx;
     int found, combined;
 
     /* Sanity check inputs */
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(found_outputs != NULL);
+    ARG_CHECK(n_found_outputs != NULL);
     ARG_CHECK(tx_outputs != NULL);
-    ARG_CHECK(scan_key != NULL);
+    ARG_CHECK(n_tx_outputs >= 1);
+    ARG_CHECK(recipient_scan_key != NULL);
     ARG_CHECK(public_data != NULL);
     combined = (int)public_data->data[0];
     {
@@ -470,16 +466,17 @@ int secp256k1_silentpayments_recipient_scan_outputs(
         if (!secp256k1_silentpayments_recipient_public_data_load(ctx, &A_sum, input_hash_ptr, public_data)) {
             return 0;
         }
-        secp256k1_pubkey_load(ctx, &receiver_spend_pubkey_ge, receiver_spend_pubkey);
-        if (!secp256k1_silentpayments_create_shared_secret(ctx, shared_secret, scan_key, &A_sum, input_hash_ptr)) {
+        secp256k1_pubkey_load(ctx, &recipient_spend_pubkey_ge, recipient_spend_pubkey);
+        if (!secp256k1_silentpayments_create_shared_secret(ctx, shared_secret, recipient_scan_key, &A_sum, input_hash_ptr)) {
             return 0;
         }
     }
 
+    found_idx = 0;
     n_found = 0;
     k = 0;
     while (1) {
-        secp256k1_ge P_output_ge = receiver_spend_pubkey_ge;
+        secp256k1_ge P_output_ge = recipient_spend_pubkey_ge;
         /* Calculate t_k = hash(shared_secret || ser_32(k)) */
         secp256k1_silentpayments_create_t_k(&t_k_scalar, shared_secret, k);
 
@@ -488,79 +485,70 @@ int secp256k1_silentpayments_recipient_scan_outputs(
             return 0;
         }
 
-        /* If the calculated output matches the one from the tx, we have a direct match and can
-         * return without labels calculation (one of the two would result in point of infinity) */
-        secp256k1_xonly_pubkey_save(&P_output_xonly, &P_output_ge);
         found = 0;
+        secp256k1_xonly_pubkey_save(&P_output_xonly, &P_output_ge);
         for (i = 0; i < n_tx_outputs; i++) {
             if (secp256k1_xonly_pubkey_cmp(ctx, &P_output_xonly, tx_outputs[i]) == 0) {
-                secp256k1_xonly_pubkey_save(&found_outputs[n_found]->output, &P_output_ge);
-                secp256k1_scalar_get_b32(found_outputs[n_found]->tweak, &t_k_scalar);
-                found_outputs[n_found]->found_with_label = 0;
-                secp256k1_pubkey_save(&found_outputs[n_found]->label, &P_output_ge);
+                label_tweak = NULL;
                 found = 1;
-                n_found++;
-                k++;
+                found_idx = i;
                 break;
             }
 
-            /* If desired, also calculate label candidates */
+            /* If not found, proceed to check for labels (if the labels cache is present) */
             if (label_lookup != NULL) {
                 secp256k1_pubkey label_pubkey;
                 secp256k1_ge P_output_negated_ge, tx_output_ge;
-                secp256k1_ge label_ge;
-                secp256k1_gej label_gej;
-                const unsigned char *label_tweak;
+                secp256k1_gej tx_output_gej, label_gej;
 
-                /* Calculate negated P_output (common addend) first */
-                secp256k1_ge_neg(&P_output_negated_ge, &P_output_ge);
-
-                /* Calculate first scan label candidate: label1 = tx_output - P_output */
                 secp256k1_xonly_pubkey_load(ctx, &tx_output_ge, tx_outputs[i]);
-                secp256k1_gej_set_ge(&label_gej, &tx_output_ge);
-                secp256k1_gej_add_ge_var(&label_gej, &label_gej, &P_output_negated_ge, NULL);
+                secp256k1_gej_set_ge(&tx_output_gej, &tx_output_ge);
+                secp256k1_ge_neg(&P_output_negated_ge, &P_output_ge);
+                /* Negate the generated output and calculate first scan label candidate:
+                 * label1 = tx_output - P_output */
+                secp256k1_gej_add_ge_var(&label_gej, &tx_output_gej, &P_output_negated_ge, NULL);
                 secp256k1_ge_set_gej(&label_ge, &label_gej);
                 secp256k1_pubkey_save(&label_pubkey, &label_ge);
-
                 label_tweak = label_lookup(&label_pubkey, label_context);
                 if (label_tweak != NULL) {
-                    secp256k1_xonly_pubkey_save(&found_outputs[n_found]->output, &tx_output_ge);
-                    found_outputs[n_found]->found_with_label = 1;
-                    secp256k1_pubkey_save(&found_outputs[n_found]->label, &label_ge);
-                    secp256k1_scalar_get_b32(found_outputs[n_found]->tweak, &t_k_scalar);
-                    if (!secp256k1_ec_seckey_tweak_add(ctx, found_outputs[n_found]->tweak, label_tweak)) {
-                        return 0;
-                    }
                     found = 1;
-                    n_found++;
-                    k++;
+                    found_idx = i;
                     break;
                 }
 
-                /* Calculate second scan label candidate: label2 = -tx_output - P_output */
-                secp256k1_gej_set_ge(&label_gej, &tx_output_ge);
-                secp256k1_gej_neg(&label_gej, &label_gej);
+                secp256k1_gej_neg(&label_gej, &tx_output_gej);
+                /* If not found, negate the tx_output and calculate second scan label candidate:
+                 * label2 = -tx_output - P_output */
                 secp256k1_gej_add_ge_var(&label_gej, &label_gej, &P_output_negated_ge, NULL);
                 secp256k1_ge_set_gej(&label_ge, &label_gej);
                 secp256k1_pubkey_save(&label_pubkey, &label_ge);
-
                 label_tweak = label_lookup(&label_pubkey, label_context);
                 if (label_tweak != NULL) {
-                    secp256k1_xonly_pubkey_save(&found_outputs[n_found]->output, &tx_output_ge);
-                    found_outputs[n_found]->found_with_label = 1;
-                    secp256k1_pubkey_save(&found_outputs[n_found]->label, &label_ge);
-                    secp256k1_scalar_get_b32(found_outputs[n_found]->tweak, &t_k_scalar);
-                    if (!secp256k1_ec_seckey_tweak_add(ctx, found_outputs[n_found]->tweak, label_tweak)) {
-                        return 0;
-                    }
                     found = 1;
-                    n_found++;
-                    k++;
+                    found_idx = i;
                     break;
                 }
             }
         }
-        if (!found) {
+        if (found) {
+            found_outputs[n_found]->output = *tx_outputs[found_idx];
+            secp256k1_scalar_get_b32(found_outputs[n_found]->tweak, &t_k_scalar);
+            if (label_lookup != NULL && label_tweak != NULL) {
+                found_outputs[n_found]->found_with_label = 1;
+                if (!secp256k1_ec_seckey_tweak_add(ctx, found_outputs[n_found]->tweak, label_tweak)) {
+                    return 0;
+                }
+                secp256k1_pubkey_save(&found_outputs[n_found]->label, &label_ge);
+            } else {
+                found_outputs[n_found]->found_with_label = 0;
+                /* TODO: instead of using the tx_output, set the label with a properly invalid pubkey */
+                secp256k1_pubkey_save(&found_outputs[n_found]->label, &P_output_ge);
+            }
+            /* Set everything for the next round of scanning */
+            label_tweak = label_tweak32;
+            n_found++;
+            k++;
+        } else {
             break;
         }
     }
@@ -581,9 +569,9 @@ int secp256k1_silentpayments_recipient_create_shared_secret(const secp256k1_cont
     return secp256k1_silentpayments_create_shared_secret(ctx, shared_secret33, recipient_scan_key, &A_tweaked, NULL);
 }
 
-int secp256k1_silentpayments_recipient_create_output_pubkey(const secp256k1_context *ctx, secp256k1_xonly_pubkey *P_output_xonly, const unsigned char *shared_secret33, const secp256k1_pubkey *receiver_spend_pubkey, unsigned int k)
+int secp256k1_silentpayments_recipient_create_output_pubkey(const secp256k1_context *ctx, secp256k1_xonly_pubkey *P_output_xonly, const unsigned char *shared_secret33, const secp256k1_pubkey *recipient_spend_pubkey, unsigned int k)
 {
-    return secp256k1_silentpayments_create_output_pubkey(ctx, P_output_xonly, shared_secret33, receiver_spend_pubkey, k);
+    return secp256k1_silentpayments_create_output_pubkey(ctx, P_output_xonly, shared_secret33, recipient_spend_pubkey, k);
 }
 
 

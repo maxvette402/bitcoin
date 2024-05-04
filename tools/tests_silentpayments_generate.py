@@ -8,7 +8,8 @@ import ripemd160
 
 NUMS_H = bytes.fromhex("50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0")
 MAX_INPUTS_PER_TEST_CASE = 3
-MAX_OUTPUTS_PER_TEST_CASE = 12
+MAX_OUTPUTS_PER_TEST_CASE = 4
+MAX_PERMUTATIONS_PER_SENDING_TEST_CASE = 12
 
 def sha256(s):
     return hashlib.sha256(s).digest()
@@ -103,14 +104,14 @@ def emit_key_material(comment, keys, include_count=False):
         out += "\n"
     out +=  "        },\n"
 
-def emit_receiver_addr_material(receiver_addresses):
+def emit_recipient_addr_material(recipient_addresses):
     global out
-    out += f"        {len(receiver_addresses)}," + "\n"
+    out += f"        {len(recipient_addresses)}," + "\n"
     out +=  "        { /* recipient pubkeys (address data) */\n"
     for i in range(MAX_OUTPUTS_PER_TEST_CASE):
         out += "            {\n"
-        if i < len(receiver_addresses):
-            B_scan, B_spend = decode_silent_payments_address(receiver_addresses[i])
+        if i < len(recipient_addresses):
+            B_scan, B_spend = decode_silent_payments_address(recipient_addresses[i])
             out += "                {"
             out += to_c_array(B_scan.hex())
             out += "},\n"
@@ -126,25 +127,43 @@ def emit_receiver_addr_material(receiver_addresses):
         out += "\n"
     out += "        },\n"
 
-def emit_outputs(comment, outputs, include_count=False, last=False):
+def emit_sending_outputs(comment, output_sets, include_count=False):
     global out
     if include_count:
-        out += f"        {len(outputs)}," + "\n"
+        out += f"        {len(output_sets)}," + "\n"
+        out += f"        {len(output_sets[0])}," + "\n"
     if comment:
         out += f"        {{ /* {comment} */" + "\n"
     else:
-        out +=  "        {\n"
+        out += "         {\n"
+    for i in range(MAX_PERMUTATIONS_PER_SENDING_TEST_CASE):
+        if i < len(output_sets):
+            emit_outputs(comment=None, outputs=output_sets[i], include_count=False, spacing=12)
+        else:
+            emit_outputs(comment=None, outputs=[], include_count=False, spacing=12)
+    out += "        }"
+    out += ","
+    out += "\n"
+
+def emit_outputs(comment, outputs, include_count=False, last=False, spacing=8):
+    global out
+    if include_count:
+        out += spacing*" " + f"{len(outputs)}," + "\n"
+    if comment:
+        out += spacing*" " + f"{{ /* {comment} */" + "\n"
+    else:
+        out += spacing*" " + "{\n"
     for i in range(MAX_OUTPUTS_PER_TEST_CASE):
         if i < len(outputs):
-            out += "            {"
+            out += spacing*" " + "    {"
             out += to_c_array(outputs[i])
             out += "}"
         else:
-            out += '            ""'
+            out += spacing*' ' + '    ""'
         if i != MAX_OUTPUTS_PER_TEST_CASE - 1:
             out += ','
         out += "\n"
-    out += "        }"
+    out += spacing*" " + "}"
     if not last:
         out += ","
     out += "\n"
@@ -191,18 +210,18 @@ for test_nr, test_vector in enumerate(test_vectors):
     out += "},\n"
 
     # emit recipient pubkeys (address data)
-    emit_receiver_addr_material(test_vector['sending'][0]['given']['recipients'])
+    emit_recipient_addr_material(test_vector['sending'][0]['given']['recipients'])
     # emit recipient outputs
-    emit_outputs("recipient outputs", test_vector['sending'][0]['expected']['outputs'], include_count=True)
+    emit_sending_outputs("recipient outputs", test_vector['sending'][0]['expected']['outputs'], include_count=True)
 
-    # emit receiver scan/spend seckeys
+    # emit recipient scan/spend seckeys
     recv_test_given = test_vector['receiving'][0]['given']
     recv_test_expected = test_vector['receiving'][0]['expected']
-    out += "        /* receiver data (scan and spend seckeys) */\n"
+    out += "        /* recipient data (scan and spend seckeys) */\n"
     out += "        {" + f"{to_c_array(recv_test_given['key_material']['scan_priv_key'])}" + "},\n"
     out += "        {" + f"{to_c_array(recv_test_given['key_material']['spend_priv_key'])}" + "},\n"
 
-    # emit receiver to-scan outputs, labels and expected-found outputs
+    # emit recipient to-scan outputs, labels and expected-found outputs
     emit_outputs("outputs to scan", recv_test_given['outputs'], include_count=True)
     labels = recv_test_given['labels']
     out += f"        {len(labels)}, " + "{"
@@ -230,8 +249,9 @@ for test_nr, test_vector in enumerate(test_vectors):
 STRUCT_DEFINITIONS = f"""
 #define MAX_INPUTS_PER_TEST_CASE  {MAX_INPUTS_PER_TEST_CASE}
 #define MAX_OUTPUTS_PER_TEST_CASE {MAX_OUTPUTS_PER_TEST_CASE}
+#define MAX_PERMUTATIONS_PER_SENDING_TEST_CASE {MAX_PERMUTATIONS_PER_SENDING_TEST_CASE}
 
-struct bip352_receiver_addressdata {{
+struct bip352_recipient_addressdata {{
     unsigned char scan_pubkey[33];
     unsigned char spend_pubkey[33];
 }};
@@ -250,13 +270,14 @@ struct bip352_test_vector {{
 
     /* Given sender data (pubkeys encoded per output address to send to) */
     size_t num_outputs;
-    struct bip352_receiver_addressdata recipient_pubkeys[MAX_OUTPUTS_PER_TEST_CASE];
+    struct bip352_recipient_addressdata recipient_pubkeys[MAX_OUTPUTS_PER_TEST_CASE];
 
     /* Expected sender data */
+    size_t num_output_sets;
     size_t num_recipient_outputs;
-    unsigned char recipient_outputs[MAX_OUTPUTS_PER_TEST_CASE][32];
+    unsigned char recipient_outputs[MAX_PERMUTATIONS_PER_SENDING_TEST_CASE][MAX_OUTPUTS_PER_TEST_CASE][32];
 
-    /* Given receiver data */
+    /* Given recipient data */
     unsigned char scan_seckey[32];
     unsigned char spend_seckey[32];
     size_t num_to_scan_outputs;
@@ -264,7 +285,7 @@ struct bip352_test_vector {{
     size_t num_labels;
     unsigned int label_integers[MAX_OUTPUTS_PER_TEST_CASE];
 
-    /* Expected receiver data */
+    /* Expected recipient data */
     size_t num_found_output_pubkeys;
     unsigned char found_output_pubkeys[MAX_OUTPUTS_PER_TEST_CASE][32];
     unsigned char found_seckey_tweaks[MAX_OUTPUTS_PER_TEST_CASE][32];

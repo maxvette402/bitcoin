@@ -248,8 +248,9 @@ static void run_selftest_tests(void) {
 
 static int ecmult_gen_context_eq(const secp256k1_ecmult_gen_context *a, const secp256k1_ecmult_gen_context *b) {
     return a->built == b->built
-            && secp256k1_scalar_eq(&a->blind, &b->blind)
-            && secp256k1_gej_eq_var(&a->initial, &b->initial);
+            && secp256k1_scalar_eq(&a->scalar_offset, &b->scalar_offset)
+            && secp256k1_ge_eq_var(&a->ge_offset, &b->ge_offset)
+            && secp256k1_fe_equal(&a->proj_blind, &b->proj_blind);
 }
 
 static int context_eq(const secp256k1_context *a, const secp256k1_context *b) {
@@ -2149,7 +2150,7 @@ static void scalar_test(void) {
         for (i = 0; i < 256; i += 4) {
             secp256k1_scalar t;
             int j;
-            secp256k1_scalar_set_int(&t, secp256k1_scalar_get_bits(&s, 256 - 4 - i, 4));
+            secp256k1_scalar_set_int(&t, secp256k1_scalar_get_bits_limb32(&s, 256 - 4 - i, 4));
             for (j = 0; j < 4; j++) {
                 secp256k1_scalar_add(&n, &n, &n);
             }
@@ -3673,6 +3674,78 @@ static void run_inverse_tests(void)
             }
         }
     }
+}
+
+/***** HSORT TESTS *****/
+
+static void test_heap_swap(void) {
+    unsigned char a[600];
+    unsigned char e[sizeof(a)];
+    memset(a,       21, 200);
+    memset(a + 200, 99, 200);
+    memset(a + 400, 42, 200);
+    memset(e,       42, 200);
+    memset(e + 200, 99, 200);
+    memset(e + 400, 21, 200);
+    secp256k1_heap_swap(a, 0, 2, 200);
+    CHECK(secp256k1_memcmp_var(a, e, sizeof(a)) == 0);
+}
+
+static void test_hsort_is_sorted(unsigned char *elements, size_t n, size_t len) {
+    size_t i;
+    for (i = 1; i < n; i++) {
+        CHECK(secp256k1_memcmp_var(&elements[(i-1) * len], &elements[i * len], len) <= 0);
+    }
+}
+
+struct test_hsort_cmp_data {
+    size_t counter;
+    size_t element_len;
+};
+
+
+static int test_hsort_cmp(const void *ele1, const void *ele2, void *data) {
+  struct test_hsort_cmp_data *d = (struct test_hsort_cmp_data *) data;
+    d->counter += 1;
+    return secp256k1_memcmp_var((unsigned char *)ele1, (unsigned char *)ele2, d->element_len);
+}
+
+#define NUM 65
+#define MAX_ELEMENT_LEN 65
+static void test_hsort(size_t element_len) {
+    unsigned char elements[NUM * MAX_ELEMENT_LEN] = { 0 };
+    struct test_hsort_cmp_data data;
+    int i;
+
+    VERIFY_CHECK(element_len <= MAX_ELEMENT_LEN);
+    data.counter = 0;
+    data.element_len = element_len;
+
+    secp256k1_hsort(elements, 0, element_len, test_hsort_cmp, &data);
+    CHECK(data.counter == 0);
+    secp256k1_hsort(elements, 1, element_len, test_hsort_cmp, &data);
+    CHECK(data.counter == 0);
+    secp256k1_hsort(elements, NUM, element_len, test_hsort_cmp, &data);
+    CHECK(data.counter >= NUM - 1);
+    test_hsort_is_sorted(elements, NUM, element_len);
+
+    /* Test hsort with array of random length n */
+    for (i = 0; i < COUNT; i++) {
+        int n = secp256k1_testrand_int(NUM);
+        secp256k1_testrand_bytes_test(elements, n*element_len);
+        secp256k1_hsort(elements, n, element_len, test_hsort_cmp, &data);
+        test_hsort_is_sorted(elements, n, element_len);
+    }
+}
+#undef NUM
+#undef MAX_ELEMENT_LEN
+
+
+static void run_hsort_tests(void) {
+    test_heap_swap();
+    test_hsort(1);
+    test_hsort(64);
+    test_hsort(65);
 }
 
 /***** GROUP TESTS *****/
@@ -5570,18 +5643,18 @@ static void test_ecmult_gen_blind(void) {
     unsigned char seed32[32];
     secp256k1_gej pgej;
     secp256k1_gej pgej2;
-    secp256k1_gej i;
+    secp256k1_ge p;
     secp256k1_ge pge;
     random_scalar_order_test(&key);
     secp256k1_ecmult_gen(&CTX->ecmult_gen_ctx, &pgej, &key);
     secp256k1_testrand256(seed32);
-    b = CTX->ecmult_gen_ctx.blind;
-    i = CTX->ecmult_gen_ctx.initial;
+    b = CTX->ecmult_gen_ctx.scalar_offset;
+    p = CTX->ecmult_gen_ctx.ge_offset;
     secp256k1_ecmult_gen_blind(&CTX->ecmult_gen_ctx, seed32);
-    CHECK(!secp256k1_scalar_eq(&b, &CTX->ecmult_gen_ctx.blind));
+    CHECK(!secp256k1_scalar_eq(&b, &CTX->ecmult_gen_ctx.scalar_offset));
     secp256k1_ecmult_gen(&CTX->ecmult_gen_ctx, &pgej2, &key);
     CHECK(!gej_xyz_equals_gej(&pgej, &pgej2));
-    CHECK(!gej_xyz_equals_gej(&i, &CTX->ecmult_gen_ctx.initial));
+    CHECK(!secp256k1_ge_eq_var(&p, &CTX->ecmult_gen_ctx.ge_offset));
     secp256k1_ge_set_gej(&pge, &pgej);
     CHECK(secp256k1_gej_eq_ge_var(&pgej2, &pge));
 }
@@ -5589,18 +5662,39 @@ static void test_ecmult_gen_blind(void) {
 static void test_ecmult_gen_blind_reset(void) {
     /* Test ecmult_gen() blinding reset and confirm that the blinding is consistent. */
     secp256k1_scalar b;
-    secp256k1_gej initial;
+    secp256k1_ge p1, p2;
     secp256k1_ecmult_gen_blind(&CTX->ecmult_gen_ctx, 0);
-    b = CTX->ecmult_gen_ctx.blind;
-    initial = CTX->ecmult_gen_ctx.initial;
+    b = CTX->ecmult_gen_ctx.scalar_offset;
+    p1 = CTX->ecmult_gen_ctx.ge_offset;
     secp256k1_ecmult_gen_blind(&CTX->ecmult_gen_ctx, 0);
-    CHECK(secp256k1_scalar_eq(&b, &CTX->ecmult_gen_ctx.blind));
-    CHECK(gej_xyz_equals_gej(&initial, &CTX->ecmult_gen_ctx.initial));
+    CHECK(secp256k1_scalar_eq(&b, &CTX->ecmult_gen_ctx.scalar_offset));
+    p2 = CTX->ecmult_gen_ctx.ge_offset;
+    CHECK(secp256k1_ge_eq_var(&p1, &p2));
+}
+
+/* Verify that ecmult_gen for scalars gn for which gn + scalar_offset = {-1,0,1}. */
+static void test_ecmult_gen_edge_cases(void) {
+    int i;
+    secp256k1_gej res1, res2, res3;
+    secp256k1_scalar gn = secp256k1_scalar_one; /* gn = 1 */
+    secp256k1_scalar_add(&gn, &gn, &CTX->ecmult_gen_ctx.scalar_offset); /* gn = 1 + scalar_offset */
+    secp256k1_scalar_negate(&gn, &gn); /* gn = -1 - scalar_offset */
+
+    for (i = -1; i < 2; ++i) {
+        /* Run test with gn = i - scalar_offset (so that the ecmult_gen recoded value represents i). */
+        secp256k1_ecmult_gen(&CTX->ecmult_gen_ctx, &res1, &gn);
+        secp256k1_ecmult(&res2, NULL, &secp256k1_scalar_zero, &gn);
+        secp256k1_ecmult_const(&res3, &secp256k1_ge_const_g, &gn);
+        CHECK(secp256k1_gej_eq_var(&res1, &res2));
+        CHECK(secp256k1_gej_eq_var(&res1, &res3));
+        secp256k1_scalar_add(&gn, &gn, &secp256k1_scalar_one);
+    }
 }
 
 static void run_ecmult_gen_blind(void) {
     int i;
     test_ecmult_gen_blind_reset();
+    test_ecmult_gen_edge_cases();
     for (i = 0; i < 10; i++) {
         test_ecmult_gen_blind();
     }
@@ -6607,47 +6701,6 @@ static void run_pubkey_comparison(void) {
     CHECK(secp256k1_ec_pubkey_cmp(CTX, &pk2, &pk1) > 0);
 }
 
-
-static void test_hsort_is_sorted(int *ints, size_t n) {
-    size_t i;
-    for (i = 1; i < n; i++) {
-        CHECK(ints[i-1] <= ints[i]);
-    }
-}
-
-static int test_hsort_cmp(const void *i1, const void *i2, void *counter) {
-  *(size_t*)counter += 1;
-  return *(int*)i1 - *(int*)i2;
-}
-
-#define NUM 64
-static void test_hsort(void) {
-    int ints[NUM] = { 0 };
-    size_t counter = 0;
-    int i, j;
-
-    secp256k1_hsort(ints, 0, sizeof(ints[0]), test_hsort_cmp, &counter);
-    CHECK(counter == 0);
-    secp256k1_hsort(ints, 1, sizeof(ints[0]), test_hsort_cmp, &counter);
-    CHECK(counter == 0);
-    secp256k1_hsort(ints, NUM, sizeof(ints[0]), test_hsort_cmp, &counter);
-    CHECK(counter > 0);
-    test_hsort_is_sorted(ints, NUM);
-
-    /* Test hsort with length n array and random elements in
-     * [-interval/2, interval/2] */
-    for (i = 0; i < COUNT; i++) {
-        int n = secp256k1_testrand_int(NUM);
-        int interval = secp256k1_testrand_int(63) + 1;
-        for (j = 0; j < n; j++) {
-            ints[j] = secp256k1_testrand_int(interval) - interval/2;
-        }
-        secp256k1_hsort(ints, n, sizeof(ints[0]), test_hsort_cmp, &counter);
-        test_hsort_is_sorted(ints, n);
-    }
-}
-#undef NUM
-
 static void test_sort_helper(secp256k1_pubkey *pk, size_t *pk_order, size_t n_pk) {
     size_t i;
     const secp256k1_pubkey *pk_test[5];
@@ -6797,7 +6850,6 @@ static void test_sort_vectors(void) {
 }
 
 static void run_pubkey_sort(void) {
-    test_hsort();
     test_sort_api();
     test_sort();
     test_sort_vectors();
@@ -7766,6 +7818,9 @@ int main(int argc, char **argv) {
     run_ctz_tests();
     run_modinv_tests();
     run_inverse_tests();
+
+    /* sorting tests */
+    run_hsort_tests();
 
     /* hash tests */
     run_sha256_known_output_tests();
