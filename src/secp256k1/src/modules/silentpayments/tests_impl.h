@@ -8,8 +8,6 @@
 
 #include "../../../include/secp256k1_silentpayments.h"
 #include "../../../src/modules/silentpayments/vectors.h"
-#include "../../../examples/examples_util.h"
-#include "assert.h"
 
 struct label_cache_entry {
     secp256k1_pubkey label;
@@ -41,7 +39,7 @@ void run_silentpayments_test_vector_send(const struct bip352_test_vector *test) 
     secp256k1_keypair const *taproot_keypair_ptrs[MAX_INPUTS_PER_TEST_CASE];
     unsigned char const *plain_seckeys[MAX_INPUTS_PER_TEST_CASE];
     unsigned char created_output[32];
-    size_t i, j;
+    size_t i, j, k;
     int match;
 
     /* Check that sender creates expected outputs */
@@ -57,7 +55,7 @@ void run_silentpayments_test_vector_send(const struct bip352_test_vector *test) 
     }
     for (i = 0; i < test->num_taproot_inputs; i++) {
         int ret = secp256k1_keypair_create(CTX, &taproot_keypairs[i], test->taproot_seckeys[i]);
-        assert(ret);
+        CHECK(ret);
         taproot_keypair_ptrs[i] = &taproot_keypairs[i];
     }
     CHECK(secp256k1_silentpayments_sender_create_outputs(CTX,
@@ -68,18 +66,25 @@ void run_silentpayments_test_vector_send(const struct bip352_test_vector *test) 
                 test->num_taproot_inputs > 0 ? taproot_keypair_ptrs : NULL, test->num_taproot_inputs,
                 test->num_plain_inputs > 0 ? plain_seckeys : NULL, test->num_plain_inputs
     ));
-    for (i = 0; i < test->num_outputs; i++) {
-        CHECK(secp256k1_xonly_pubkey_serialize(CTX, created_output, &generated_outputs[i]));
-        match = 0;
-        /* Loop over both lists to ensure tests don't fail due to different orderings of outputs */
-        for (j = 0; j < test->num_recipient_outputs; j++) {
-            if (secp256k1_memcmp_var(created_output, test->recipient_outputs[j], 32) == 0) {
-                match = 1;
-                break;
+    match = 0;
+    for (i = 0; i < test->num_output_sets; i++) {
+        size_t n_matches = 0;
+        for (j = 0; j < test->num_outputs; j++) {
+            CHECK(secp256k1_xonly_pubkey_serialize(CTX, created_output, &generated_outputs[j]));
+            /* Loop over both lists to ensure tests don't fail due to different orderings of outputs */
+            for (k = 0; k < test->num_recipient_outputs; k++) {
+                if (secp256k1_memcmp_var(created_output, test->recipient_outputs[i][k], 32) == 0) {
+                    n_matches++;
+                    break;
+                }
             }
         }
-        CHECK(match);
+        if (n_matches == test->num_recipient_outputs) {
+            match = 1;
+            break;
+        }
     }
+    CHECK(match);
 }
 
 void run_silentpayments_test_vector_receive(const struct bip352_test_vector *test) {
@@ -92,8 +97,8 @@ void run_silentpayments_test_vector_receive(const struct bip352_test_vector *tes
     secp256k1_xonly_pubkey const *tx_outputs[MAX_OUTPUTS_PER_TEST_CASE];
     secp256k1_silentpayments_found_output *found_outputs[MAX_OUTPUTS_PER_TEST_CASE];
     unsigned char found_outputs_light_client[MAX_OUTPUTS_PER_TEST_CASE][32];
-    secp256k1_pubkey receiver_scan_pubkey;
-    secp256k1_pubkey receiver_spend_pubkey;
+    secp256k1_pubkey recipient_scan_pubkey;
+    secp256k1_pubkey recipient_spend_pubkey;
     size_t i,j;
     int match;
     size_t n_found = 0;
@@ -131,9 +136,9 @@ void run_silentpayments_test_vector_receive(const struct bip352_test_vector *tes
         }
     }
 
-    /* scan / spend pubkeys are not in the given data of the receiver part, so let's compute them */
-    CHECK(secp256k1_ec_pubkey_create(CTX, &receiver_scan_pubkey, test->scan_seckey));
-    CHECK(secp256k1_ec_pubkey_create(CTX, &receiver_spend_pubkey, test->spend_seckey));
+    /* scan / spend pubkeys are not in the given data of the recipient part, so let's compute them */
+    CHECK(secp256k1_ec_pubkey_create(CTX, &recipient_scan_pubkey, test->scan_seckey));
+    CHECK(secp256k1_ec_pubkey_create(CTX, &recipient_spend_pubkey, test->spend_seckey));
 
     /* create labels cache */
     labels_cache.ctx = CTX;
@@ -149,7 +154,7 @@ void run_silentpayments_test_vector_receive(const struct bip352_test_vector *tes
         tx_outputs, test->num_to_scan_outputs,
         test->scan_seckey,
         &public_data,
-        &receiver_spend_pubkey,
+        &recipient_spend_pubkey,
         label_lookup, &labels_cache)
     );
     for (i = 0; i < n_found; i++) {
@@ -170,14 +175,14 @@ void run_silentpayments_test_vector_receive(const struct bip352_test_vector *tes
     }
 
     /* compare expected and scanned outputs (including calculated seckey tweaks and signatures) */
+    match = 0;
     for (i = 0; i < n_found; i++) {
         CHECK(secp256k1_xonly_pubkey_serialize(CTX, found_output, &found_outputs[i]->output));
-        match = 0;
         for (j = 0; j < test->num_found_output_pubkeys; j++) {
             if (secp256k1_memcmp_var(&found_output, test->found_output_pubkeys[j], 32) == 0) {
-                match = 1;
                 CHECK(secp256k1_memcmp_var(found_outputs[i]->tweak, test->found_seckey_tweaks[j], 32) == 0);
                 CHECK(secp256k1_memcmp_var(found_signatures[i], test->found_signatures[j], 64) == 0);
+                match = 1;
                 break;
             }
         }
@@ -198,22 +203,19 @@ void run_silentpayments_test_vector_receive(const struct bip352_test_vector *tes
             int found = 0;
             size_t k = 0;
             secp256k1_xonly_pubkey potential_output;
-            unsigned char xonly_print[32];
 
             while(1) {
 
                 CHECK(secp256k1_silentpayments_recipient_create_output_pubkey(CTX,
                     &potential_output,
                     shared_secret_lightclient,
-                    &receiver_spend_pubkey,
+                    &recipient_spend_pubkey,
                     k
                 ));
                 /* At this point, we check that the utxo exists with a light client protocol.
                  * For this example, we'll just iterate through the list of pubkeys */
                 found = 0;
-                secp256k1_xonly_pubkey_serialize(CTX, xonly_print, &potential_output);
                 for (i = 0; i < test->num_to_scan_outputs; i++) {
-                    secp256k1_xonly_pubkey_serialize(CTX, xonly_print, tx_outputs[i]);
                     if (secp256k1_xonly_pubkey_cmp(CTX, &potential_output, tx_outputs[i]) == 0) {
                         secp256k1_xonly_pubkey_serialize(CTX, found_outputs_light_client[n_found], &potential_output);
                         found = 1;

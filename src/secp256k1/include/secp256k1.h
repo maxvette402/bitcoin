@@ -474,7 +474,7 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_ec_pubkey_cmp(
     const secp256k1_pubkey *pubkey2
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3);
 
-/** Sort public keys keys using lexicographic (of compressed serialization) order
+/** Sort public keys using lexicographic (of compressed serialization) order
  *
  *  Returns: 0 if the arguments are invalid. 1 otherwise.
  *
