@@ -192,6 +192,7 @@ BITCOIN_CORE_H = \
   kernel/mempool_removal_reason.h \
   kernel/messagestartchars.h \
   kernel/notifications_interface.h \
+  kernel/result.h \
   kernel/validation_cache_sizes.h \
   key.h \
   key_io.h \
@@ -746,6 +747,7 @@ libbitcoin_util_a_SOURCES = \
   util/moneystr.cpp \
   util/rbf.cpp \
   util/readwritefile.cpp \
+  util/result.cpp \
   util/signalinterrupt.cpp \
   util/thread.cpp \
   util/threadinterrupt.cpp \
@@ -983,6 +985,7 @@ libbitcoinkernel_la_SOURCES = \
   util/hasher.cpp \
   util/moneystr.cpp \
   util/rbf.cpp \
+  util/result.cpp \
   util/serfloat.cpp \
   util/signalinterrupt.cpp \
   util/strencodings.cpp \
