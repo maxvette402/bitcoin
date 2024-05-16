@@ -10,6 +10,7 @@
 #include <consensus/amount.h>
 #include <script/script.h>
 #include <serialize.h>
+#include <streams.h>
 #include <uint256.h>
 #include <util/transaction_identifier.h> // IWYU pragma: export
 
@@ -43,7 +44,10 @@ public:
 
     friend bool operator<(const COutPoint& a, const COutPoint& b)
     {
-        return std::tie(a.hash, a.n) < std::tie(b.hash, b.n);
+        DataStream ser_a, ser_b;
+        ser_a << a;
+        ser_b << b;
+        return Span{ser_a} < Span{ser_b};
     }
 
     friend bool operator==(const COutPoint& a, const COutPoint& b)
