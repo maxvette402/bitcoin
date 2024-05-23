@@ -4,6 +4,8 @@
 
 #include <span.h>
 #include <streams.h>
+#include <tinyformat.h>
+#include <util/syserror.h>
 
 #include <array>
 
@@ -45,8 +47,9 @@ int64_t AutoFile::tell()
 
 void AutoFile::read(Span<std::byte> dst)
 {
-    if (detail_fread(dst) != dst.size()) {
-        throw std::ios_base::failure(feof() ? "AutoFile::read: end of file" : "AutoFile::read: fread failed");
+    if (detail_fread(dst) != dst.size() || ferror(m_file)) {
+        throw std::ios_base::failure(feof() ? "AutoFile::read: end of file" :
+                                              strprintf("AutoFile::read: error: %s", SysErrorString(errno)));
     }
 }
 
@@ -85,4 +88,5 @@ void AutoFile::write(Span<const std::byte> src)
             current_pos += buf_now.size();
         }
     }
+    m_was_written = true;
 }
