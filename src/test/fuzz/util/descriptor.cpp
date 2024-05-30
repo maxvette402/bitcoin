@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <test/fuzz/util/descriptor.h>
+#include <reverse_iterator.h>
 
 #include <stack>
 
@@ -97,6 +98,23 @@ bool HasLargeFrag(const FuzzBufferType& buff, const int max_subs)
             if (++counts.top() > max_subs) return true;
         } else if (ch == ')' && !counts.empty()) {
             counts.pop();
+        }
+    }
+    return false;
+}
+
+bool HasTooManyWrappers(const FuzzBufferType& buff, const int max_wrappers)
+{
+    auto count{0};
+    // We iterate in reverse order to start counting when we encounter a colon.
+    const std::span stdbuff{buff.begin(), buff.end()};
+    for (const auto ch: reverse_iterate(stdbuff)) {
+        if (ch == ':') {
+            count++;
+        } else if (ch == ',' || ch == '(' || ch == '{') {
+            count = 0;
+        } else if (count > 0 && ++count > max_wrappers) {
+            return true;
         }
     }
     return false;
