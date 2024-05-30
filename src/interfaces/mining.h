@@ -9,6 +9,7 @@ namespace node {
 struct NodeContext;
 } // namespace node
 
+class CBlockIndex;
 class BlockValidationState;
 class CBlockIndex;
 
@@ -24,6 +25,9 @@ public:
 
     /** If this chain is exclusively used for testing */
     virtual bool isTestChain() = 0;
+
+    //! Returns the hash for the tip of this chain, 0 if none
+    virtual uint256 getTipHash() = 0;
 
     /**
      * Check a block is completely valid from start to finish.
