@@ -30,6 +30,10 @@ public:
     //! Returns the hash for the tip of this chain, 0 if none
     virtual uint256 getTipHash() = 0;
 
+    //! Return the number of transaction updates in the mempool,
+    //! used to decide whether to make a new block template.
+    virtual unsigned int getTransactionsUpdated() = 0;
+
     /** Construct a new block template with coinbase to scriptPubKeyIn */
     virtual std::unique_ptr<node::CBlockTemplate> createNewBlock(const CScript& scriptPubKeyIn, bool use_mempool = true) = 0;
 
