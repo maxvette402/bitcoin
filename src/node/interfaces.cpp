@@ -846,6 +846,11 @@ public:
         return chainman().GetParams().IsTestChain();
     }
 
+    bool isInitialBlockDownload() override
+    {
+        return chainman().IsInitialBlockDownload();
+    }
+
     uint256 getTipHash() override
     {
         LOCK(::cs_main);
