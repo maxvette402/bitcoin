@@ -32,6 +32,7 @@
 #include <node/context.h>
 #include <node/interface_ui.h>
 #include <node/mini_miner.h>
+#include <node/miner.h>
 #include <node/transaction.h>
 #include <node/types.h>
 #include <policy/feerate.h>
@@ -856,6 +857,12 @@ public:
     {
         LOCK(::cs_main);
         return TestBlockValidity(state, chainman().GetParams(), chainman().ActiveChainstate(), block, chainman().ActiveChain().Tip(), /*fCheckPOW=*/false, check_merkle_root);
+    }
+
+    std::unique_ptr<CBlockTemplate> createNewBlock(const CScript& scriptPubKeyIn, bool use_mempool) override
+    {
+        LOCK(::cs_main);
+        return BlockAssembler{chainman().ActiveChainstate(), use_mempool ? context()->mempool.get() : nullptr}.CreateNewBlock(scriptPubKeyIn);
     }
 
     NodeContext* context() override { return &m_node; }

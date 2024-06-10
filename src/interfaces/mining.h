@@ -6,6 +6,7 @@
 #define BITCOIN_INTERFACES_MINING_H
 
 namespace node {
+struct CBlockTemplate;
 struct NodeContext;
 } // namespace node
 
@@ -28,6 +29,9 @@ public:
 
     //! Returns the hash for the tip of this chain, 0 if none
     virtual uint256 getTipHash() = 0;
+
+    /** Construct a new block template with coinbase to scriptPubKeyIn */
+    virtual std::unique_ptr<node::CBlockTemplate> createNewBlock(const CScript& scriptPubKeyIn, bool use_mempool = true) = 0;
 
     /**
      * Check a block is completely valid from start to finish.
