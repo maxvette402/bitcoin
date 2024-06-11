@@ -2836,6 +2836,15 @@ static RPCHelpMan loadtxoutset()
             strprintf("The base block header (%s) must appear in the headers chain. Make sure all headers are syncing, and call this RPC again.",
                       base_blockhash.ToString()));
     }
+
+    bool start_block_invalid = WITH_LOCK(::cs_main,
+            return snapshot_start_block->nStatus & BLOCK_FAILED_MASK);
+    if (start_block_invalid) {
+        throw JSONRPCError(
+            RPC_INTERNAL_ERROR,
+            "The base block header is part of an invalid chain.");
+    }
+
     if (!chainman.ActivateSnapshot(afile, metadata, false)) {
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to load UTXO snapshot " + fs::PathToString(path));
     }

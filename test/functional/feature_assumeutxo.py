@@ -204,6 +204,15 @@ class AssumeutxoTest(BitcoinTestFramework):
             assert_raises_rpc_error(-32603, "Unable to load UTXO snapshot", node.loadtxoutset, dump_output_path)
         self.restart_node(0, extra_args=self.extra_args[0])
 
+    def test_snapshot_block_invalidated(self, dump_output_path):
+        self.log.info("Test snapshot is not loaded when base block is invalid.")
+        node = self.nodes[0]
+        block_hash = node.getblockhash(SNAPSHOT_BASE_HEIGHT - 1)
+        node.invalidateblock(block_hash)
+        assert_equal(node.getblockcount(), SNAPSHOT_BASE_HEIGHT - 2)
+        assert_raises_rpc_error(-32603, "The base block header is part of an invalid chain.", node.loadtxoutset, dump_output_path)
+        node.reconsiderblock(block_hash)
+
     def run_test(self):
         """
         Bring up two (disconnected) nodes, mine some new blocks on the first,
@@ -290,6 +299,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.test_invalid_snapshot_scenarios(dump_output['path'])
         self.test_invalid_chainstate_scenarios()
         self.test_invalid_file_path()
+        self.test_snapshot_block_invalidated(dump_output['path'])
 
         self.log.info(f"Loading snapshot into second node from {dump_output['path']}")
         loaded = n1.loadtxoutset(dump_output['path'])
