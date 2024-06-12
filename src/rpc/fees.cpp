@@ -33,11 +33,11 @@ static RPCHelpMan estimatesmartfee()
         "in BIP 141 (witness data is discounted).\n",
         {
             {"conf_target", RPCArg::Type::NUM, RPCArg::Optional::NO, "Confirmation target in blocks (1 - 1008)"},
-            {"estimate_mode", RPCArg::Type::STR, RPCArg::Default{"conservative"}, "The fee estimate mode.\n"
-            "Whether to return a more conservative estimate which also satisfies\n"
-            "a longer history. A conservative estimate potentially returns a\n"
-            "higher feerate and is more likely to be sufficient for the desired\n"
-            "target, but is not as responsive to short term drops in the\n"
+            {"estimate_mode", RPCArg::Type::STR, RPCArg::Default{"economical"}, "The fee estimate mode.\n"
+            "Whether to return a more economical estimate\n"
+            "An economical estimate potentially returns a\n"
+            "lower feerate that is estimated to be sufficient for the desired\n"
+            "target, it is also a bit more responsive to short term drops in the\n"
             "prevailing fee market. Must be one of (case insensitive):\n"
              "\"" + FeeModes("\"\n\"") + "\""},
         },
@@ -68,13 +68,13 @@ static RPCHelpMan estimatesmartfee()
             CHECK_NONFATAL(mempool.m_opts.signals)->SyncWithValidationInterfaceQueue();
             unsigned int max_target = fee_estimator.HighestTargetTracked(FeeEstimateHorizon::LONG_HALFLIFE);
             unsigned int conf_target = ParseConfirmTarget(request.params[0], max_target);
-            bool conservative = true;
+            bool conservative = false;
             if (!request.params[1].isNull()) {
                 FeeEstimateMode fee_mode;
                 if (!FeeModeFromString(request.params[1].get_str(), fee_mode)) {
                     throw JSONRPCError(RPC_INVALID_PARAMETER, InvalidEstimateModeErrorMessage());
                 }
-                if (fee_mode == FeeEstimateMode::ECONOMICAL) conservative = false;
+                if (fee_mode == FeeEstimateMode::CONSERVATIVE) conservative = true;
             }
 
             UniValue result(UniValue::VOBJ);
