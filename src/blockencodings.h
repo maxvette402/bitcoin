@@ -109,6 +109,9 @@ public:
     // Dummy for deserialization
     CBlockHeaderAndShortTxIDs() {}
 
+    // Unsafe init with fixed nonce for testing/internal-use only
+    CBlockHeaderAndShortTxIDs(const CBlock& block, const uint64_t nonce);
+
     CBlockHeaderAndShortTxIDs(const CBlock& block);
 
     uint64_t GetShortID(const Wtxid& wtxid) const;
