@@ -478,9 +478,6 @@ public:
          */
         const std::optional<CFeeRate> m_client_maxfeerate;
 
-        /** Whether CPFP carveout and RBF carveout are granted. */
-        const bool m_allow_carveouts;
-
         /** Parameters for single transaction mempool validation. */
         static ATMPArgs SingleAccept(const CChainParams& chainparams, int64_t accept_time,
                                      bool bypass_limits, std::vector<COutPoint>& coins_to_uncache,
@@ -495,7 +492,6 @@ public:
                             /* m_package_submission */ false,
                             /* m_package_feerates */ false,
                             /* m_client_maxfeerate */ {}, // checked by caller
-                            /* m_allow_carveouts */ true,
             };
         }
 
@@ -512,7 +508,6 @@ public:
                             /* m_package_submission */ false, // not submitting to mempool
                             /* m_package_feerates */ false,
                             /* m_client_maxfeerate */ {}, // checked by caller
-                            /* m_allow_carveouts */ false,
             };
         }
 
@@ -529,7 +524,6 @@ public:
                             /* m_package_submission */ true,
                             /* m_package_feerates */ true,
                             /* m_client_maxfeerate */ client_maxfeerate,
-                            /* m_allow_carveouts */ false,
             };
         }
 
@@ -545,7 +539,6 @@ public:
                             /* m_package_submission */ true, // do not LimitMempoolSize in Finalize()
                             /* m_package_feerates */ false, // only 1 transaction
                             /* m_client_maxfeerate */ package_args.m_client_maxfeerate,
-                            /* m_allow_carveouts */ false,
             };
         }
 
@@ -561,8 +554,7 @@ public:
                  bool allow_sibling_eviction,
                  bool package_submission,
                  bool package_feerates,
-                 std::optional<CFeeRate> client_maxfeerate,
-                 bool allow_carveouts)
+                 std::optional<CFeeRate> client_maxfeerate)
             : m_chainparams{chainparams},
               m_accept_time{accept_time},
               m_bypass_limits{bypass_limits},
@@ -572,14 +564,12 @@ public:
               m_allow_sibling_eviction{allow_sibling_eviction},
               m_package_submission{package_submission},
               m_package_feerates{package_feerates},
-              m_client_maxfeerate{client_maxfeerate},
-              m_allow_carveouts{allow_carveouts}
+              m_client_maxfeerate{client_maxfeerate}
         {
             // If we are using package feerates, we must be doing package submission.
-            // It also means carveouts and sibling eviction are not permitted.
+            // It also means sibling eviction is not permitted.
             if (m_package_feerates) {
                 Assume(m_package_submission);
-                Assume(!m_allow_carveouts);
                 Assume(!m_allow_sibling_eviction);
             }
             if (m_allow_sibling_eviction) Assume(m_allow_replacement);
@@ -602,8 +592,8 @@ public:
     /**
      * Submission of a subpackage.
      * If subpackage size == 1, calls AcceptSingleTransaction() with adjusted ATMPArgs to avoid
-     * package policy restrictions like no CPFP carve out (PackageMempoolChecks) and disabled RBF
-     * (m_allow_replacement), and creates a PackageMempoolAcceptResult wrapping the result.
+     * package policy restrictions like disabled RBF (m_allow_replacement) and
+     * creates a PackageMempoolAcceptResult wrapping the result.
      *
      * If subpackage size > 1, calls AcceptMultipleTransactions() with the provided ATMPArgs.
      *
