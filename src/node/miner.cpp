@@ -20,7 +20,6 @@
 #include <policy/policy.h>
 #include <pow.h>
 #include <primitives/transaction.h>
-#include <util/moneystr.h>
 #include <util/time.h>
 #include <validation.h>
 
@@ -71,24 +70,6 @@ BlockAssembler::BlockAssembler(Chainstate& chainstate, const CTxMemPool* mempool
       m_options{ClampOptions(options)}
 {
 }
-
-void ApplyArgsManOptions(const ArgsManager& args, BlockAssembler::Options& options)
-{
-    // Block resource limits
-    options.nBlockMaxWeight = args.GetIntArg("-blockmaxweight", options.nBlockMaxWeight);
-    if (const auto blockmintxfee{args.GetArg("-blockmintxfee")}) {
-        if (const auto parsed{ParseMoney(*blockmintxfee)}) options.blockMinFeeRate = CFeeRate{*parsed};
-    }
-}
-static BlockAssembler::Options ConfiguredOptions()
-{
-    BlockAssembler::Options options;
-    ApplyArgsManOptions(gArgs, options);
-    return options;
-}
-
-BlockAssembler::BlockAssembler(Chainstate& chainstate, const CTxMemPool* mempool)
-    : BlockAssembler(chainstate, mempool, ConfiguredOptions()) {}
 
 void BlockAssembler::resetBlock()
 {

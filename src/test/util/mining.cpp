@@ -125,6 +125,5 @@ std::shared_ptr<CBlock> PrepareBlock(const NodeContext& node, const CScript& coi
 std::shared_ptr<CBlock> PrepareBlock(const NodeContext& node, const CScript& coinbase_scriptPubKey)
 {
     BlockAssembler::Options assembler_options;
-    ApplyArgsManOptions(*node.args, assembler_options);
     return PrepareBlock(node, coinbase_scriptPubKey, assembler_options);
 }
