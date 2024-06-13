@@ -78,7 +78,7 @@ bool FeeModeFromString(const std::string& mode_string, FeeEstimateMode& fee_esti
 bilingual_str PSBTErrorString(PSBTError err)
 {
     switch (err) {
-        case PSBTError::MISSING_INPUTS:
+        case PSBTError::INPUTS_MISSING_OR_SPENT:
             return Untranslated("Inputs missing or spent");
         case PSBTError::SIGHASH_MISMATCH:
             return Untranslated("Specified sighash value does not match value stored in PSBT");
