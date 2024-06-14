@@ -378,6 +378,7 @@ BASE_SCRIPTS = [
     'feature_logging.py',
     'feature_anchors.py',
     'mempool_datacarrier.py',
+    'rpc_getversion.py',
     'feature_coinstatsindex.py',
     'wallet_orphanedreward.py',
     'wallet_timelock.py',
