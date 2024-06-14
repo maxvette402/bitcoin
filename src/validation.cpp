@@ -478,9 +478,6 @@ public:
          */
         const std::optional<CFeeRate> m_client_maxfeerate;
 
-        /** Whether CPFP carveout and RBF carveout are granted. */
-        const bool m_allow_carveouts;
-
         /** Parameters for single transaction mempool validation. */
         static ATMPArgs SingleAccept(const CChainParams& chainparams, int64_t accept_time,
                                      bool bypass_limits, std::vector<COutPoint>& coins_to_uncache,
@@ -495,7 +492,6 @@ public:
                             /* m_package_submission */ false,
                             /* m_package_feerates */ false,
                             /* m_client_maxfeerate */ {}, // checked by caller
-                            /* m_allow_carveouts */ true,
             };
         }
 
@@ -512,7 +508,6 @@ public:
                             /* m_package_submission */ false, // not submitting to mempool
                             /* m_package_feerates */ false,
                             /* m_client_maxfeerate */ {}, // checked by caller
-                            /* m_allow_carveouts */ false,
             };
         }
 
@@ -529,7 +524,6 @@ public:
                             /* m_package_submission */ true,
                             /* m_package_feerates */ true,
                             /* m_client_maxfeerate */ client_maxfeerate,
-                            /* m_allow_carveouts */ false,
             };
         }
 
@@ -545,7 +539,6 @@ public:
                             /* m_package_submission */ true, // do not LimitMempoolSize in Finalize()
                             /* m_package_feerates */ false, // only 1 transaction
                             /* m_client_maxfeerate */ package_args.m_client_maxfeerate,
-                            /* m_allow_carveouts */ false,
             };
         }
 
@@ -561,8 +554,7 @@ public:
                  bool allow_sibling_eviction,
                  bool package_submission,
                  bool package_feerates,
-                 std::optional<CFeeRate> client_maxfeerate,
-                 bool allow_carveouts)
+                 std::optional<CFeeRate> client_maxfeerate)
             : m_chainparams{chainparams},
               m_accept_time{accept_time},
               m_bypass_limits{bypass_limits},
@@ -572,14 +564,12 @@ public:
               m_allow_sibling_eviction{allow_sibling_eviction},
               m_package_submission{package_submission},
               m_package_feerates{package_feerates},
-              m_client_maxfeerate{client_maxfeerate},
-              m_allow_carveouts{allow_carveouts}
+              m_client_maxfeerate{client_maxfeerate}
         {
             // If we are using package feerates, we must be doing package submission.
-            // It also means carveouts and sibling eviction are not permitted.
+            // It also means sibling eviction is not permitted.
             if (m_package_feerates) {
                 Assume(m_package_submission);
-                Assume(!m_allow_carveouts);
                 Assume(!m_allow_sibling_eviction);
             }
             if (m_allow_sibling_eviction) Assume(m_allow_replacement);
@@ -602,8 +592,8 @@ public:
     /**
      * Submission of a subpackage.
      * If subpackage size == 1, calls AcceptSingleTransaction() with adjusted ATMPArgs to avoid
-     * package policy restrictions like no CPFP carve out (PackageMempoolChecks) and disabled RBF
-     * (m_allow_replacement), and creates a PackageMempoolAcceptResult wrapping the result.
+     * package policy restrictions like disabled RBF (m_allow_replacement) and
+     * creates a PackageMempoolAcceptResult wrapping the result.
      *
      * If subpackage size > 1, calls AcceptMultipleTransactions() with the provided ATMPArgs.
      *
@@ -630,7 +620,7 @@ private:
          * replace via sibling eviction. */
         CTxMemPool::setEntries m_iters_conflicting;
         /** All mempool ancestors of this transaction. */
-        CTxMemPool::setEntries m_ancestors;
+        CTxMemPool::Entries m_parents;
         /** Mempool entry constructed for this transaction. Constructed in PreChecks() but not
          * inserted into the mempool until Finalize(). */
         std::unique_ptr<CTxMemPoolEntry> m_entry;
@@ -668,6 +658,10 @@ private:
 
     // Run checks for mempool replace-by-fee.
     bool ReplacementChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+
+    // Run cluster size checks (for non-rbf transactions -- RBF is handled
+    // separately in ReplacementChecks()).
+    bool ClusterSizeChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Enforce package mempool ancestor/descendant limits (distinct from individual
     // ancestor/descendant limits done in PreChecks).
@@ -948,94 +942,14 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
 
     ws.m_iters_conflicting = m_pool.GetIterSet(ws.m_conflicts);
 
-    // Note that these modifications are only applicable to single transaction scenarios;
-    // carve-outs and package RBF are disabled for multi-transaction evaluations.
-    CTxMemPool::Limits maybe_rbf_limits = m_pool.m_opts.limits;
-
-    // Calculate in-mempool ancestors, up to a limit.
-    if (ws.m_conflicts.size() == 1 && args.m_allow_carveouts) {
-        // In general, when we receive an RBF transaction with mempool conflicts, we want to know whether we
-        // would meet the chain limits after the conflicts have been removed. However, there isn't a practical
-        // way to do this short of calculating the ancestor and descendant sets with an overlay cache of
-        // changed mempool entries. Due to both implementation and runtime complexity concerns, this isn't
-        // very realistic, thus we only ensure a limited set of transactions are RBF'able despite mempool
-        // conflicts here. Importantly, we need to ensure that some transactions which were accepted using
-        // the below carve-out are able to be RBF'ed, without impacting the security the carve-out provides
-        // for off-chain contract systems (see link in the comment below).
-        //
-        // Specifically, the subset of RBF transactions which we allow despite chain limits are those which
-        // conflict directly with exactly one other transaction (but may evict children of said transaction),
-        // and which are not adding any new mempool dependencies. Note that the "no new mempool dependencies"
-        // check is accomplished later, so we don't bother doing anything about it here, but if our
-        // policy changes, we may need to move that check to here instead of removing it wholesale.
-        //
-        // Such transactions are clearly not merging any existing packages, so we are only concerned with
-        // ensuring that (a) no package is growing past the package size (not count) limits and (b) we are
-        // not allowing something to effectively use the (below) carve-out spot when it shouldn't be allowed
-        // to.
-        //
-        // To check these we first check if we meet the RBF criteria, above, and increment the descendant
-        // limits by the direct conflict and its descendants (as these are recalculated in
-        // CalculateMempoolAncestors by assuming the new transaction being added is a new descendant, with no
-        // removals, of each parent's existing dependent set). The ancestor count limits are unmodified (as
-        // the ancestor limits should be the same for both our new transaction and any conflicts).
-        // We don't bother incrementing m_limit_descendants by the full removal count as that limit never comes
-        // into force here (as we're only adding a single transaction).
-        assert(ws.m_iters_conflicting.size() == 1);
-        CTxMemPool::txiter conflict = *ws.m_iters_conflicting.begin();
-
-        maybe_rbf_limits.descendant_count += 1;
-        maybe_rbf_limits.descendant_size_vbytes += conflict->GetSizeWithDescendants();
-    }
-
-    if (auto ancestors{m_pool.CalculateMemPoolAncestors(*entry, maybe_rbf_limits)}) {
-        ws.m_ancestors = std::move(*ancestors);
-    } else {
-        // If CalculateMemPoolAncestors fails second time, we want the original error string.
-        const auto error_message{util::ErrorString(ancestors).original};
-
-        // Carve-out is not allowed in this context; fail
-        if (!args.m_allow_carveouts) {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", error_message);
-        }
-
-        // Contracting/payment channels CPFP carve-out:
-        // If the new transaction is relatively small (up to 40k weight)
-        // and has at most one ancestor (ie ancestor limit of 2, including
-        // the new transaction), allow it if its parent has exactly the
-        // descendant limit descendants. The transaction also cannot be v3,
-        // as its topology restrictions do not allow a second child.
-        //
-        // This allows protocols which rely on distrusting counterparties
-        // being able to broadcast descendants of an unconfirmed transaction
-        // to be secure by simply only having two immediately-spendable
-        // outputs - one for each counterparty. For more info on the uses for
-        // this, see https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-November/016518.html
-        CTxMemPool::Limits cpfp_carve_out_limits{
-            .ancestor_count = 2,
-            .ancestor_size_vbytes = maybe_rbf_limits.ancestor_size_vbytes,
-            .descendant_count = maybe_rbf_limits.descendant_count + 1,
-            .descendant_size_vbytes = maybe_rbf_limits.descendant_size_vbytes + EXTRA_DESCENDANT_TX_SIZE_LIMIT,
-        };
-        if (ws.m_vsize > EXTRA_DESCENDANT_TX_SIZE_LIMIT || ws.m_ptx->version == TRUC_VERSION) {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", error_message);
-        }
-        if (auto ancestors_retry{m_pool.CalculateMemPoolAncestors(*entry, cpfp_carve_out_limits)}) {
-            ws.m_ancestors = std::move(*ancestors_retry);
-        } else {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", error_message);
-        }
-    }
-
     // Even though just checking direct mempool parents for inheritance would be sufficient, we
     // check using the full ancestor set here because it's more convenient to use what we have
     // already calculated.
-    if (const auto err{SingleV3Checks(ws.m_ptx, ws.m_ancestors, ws.m_conflicts, ws.m_vsize)}) {
+    if (const auto err{SingleV3Checks(m_pool, ws.m_ptx, ws.m_conflicts, ws.m_vsize)}) {
         // Single transaction contexts only.
         if (args.m_allow_sibling_eviction && err->second != nullptr) {
             // We should only be considering where replacement is considered valid as well.
             Assume(args.m_allow_replacement);
-
             // Potential sibling eviction. Add the sibling to our list of mempool conflicts to be
             // included in RBF checks.
             ws.m_conflicts.insert(err->second->GetHash());
@@ -1052,19 +966,36 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-rule-violation", err->first);
         }
     }
+    ws.m_parents = m_pool.CalculateParentsOf(*ws.m_ptx);
 
-    // A transaction that spends outputs that would be replaced by it is invalid. Now
-    // that we have the set of all ancestors we can detect this
-    // pathological case by making sure ws.m_conflicts and ws.m_ancestors don't
-    // intersect.
-    if (const auto err_string{EntriesAndTxidsDisjoint(ws.m_ancestors, ws.m_conflicts, hash)}) {
-        // We classify this as a consensus error because a transaction depending on something it
-        // conflicts with would be inconsistent.
-        return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-spends-conflicting-tx", *err_string);
+    // A transaction that spends outputs that would be replaced by it is invalid. Ensure
+    // that m_conflicts doesn't intersect with the set of ancestors.
+    if (!ws.m_conflicts.empty()) {
+        auto ancestors = m_pool.CalculateMemPoolAncestors(*entry);
+        if (const auto err_string{EntriesAndTxidsDisjoint(ancestors, ws.m_conflicts, hash)}) {
+            // We classify this as a consensus error because a transaction depending on something it
+            // conflicts with would be inconsistent.
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-spends-conflicting-tx", *err_string);
+        }
     }
 
     // We want to detect conflicts in any tx in a package to trigger package RBF logic
     m_subpackage.m_rbf |= !ws.m_conflicts.empty();
+    return true;
+}
+
+bool MemPoolAccept::ClusterSizeChecks(Workspace& ws)
+{
+    AssertLockHeld(cs_main);
+    AssertLockHeld(m_pool.cs);
+
+    const CTxMemPoolEntry &entry = *ws.m_entry;
+    TxValidationState& state = ws.m_state;
+
+    auto result{m_pool.CheckClusterSizeLimit(entry.GetTxSize(), 1, m_pool.m_opts.limits, ws.m_parents)};
+    if (!result) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-large-cluster", util::ErrorString(result).original);
+    }
     return true;
 }
 
@@ -1078,34 +1009,11 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     TxValidationState& state = ws.m_state;
 
     CFeeRate newFeeRate(ws.m_modified_fees, ws.m_vsize);
-    // Enforce Rule #6. The replacement transaction must have a higher feerate than its direct conflicts.
-    // - The motivation for this check is to ensure that the replacement transaction is preferable for
-    //   block-inclusion, compared to what would be removed from the mempool.
-    // - This logic predates ancestor feerate-based transaction selection, which is why it doesn't
-    //   consider feerates of descendants.
-    // - Note: Ancestor feerate-based transaction selection has made this comparison insufficient to
-    //   guarantee that this is incentive-compatible for miners, because it is possible for a
-    //   descendant transaction of a direct conflict to pay a higher feerate than the transaction that
-    //   might replace them, under these rules.
-    if (const auto err_string{PaysMoreThanConflicts(ws.m_iters_conflicting, newFeeRate, hash)}) {
-        // Even though this is a fee-related failure, this result is TX_MEMPOOL_POLICY, not
-        // TX_RECONSIDERABLE, because it cannot be bypassed using package validation.
-        // This must be changed if package RBF is enabled.
-        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
-                             strprintf("insufficient fee%s", ws.m_sibling_eviction ? " (including sibling eviction)" : ""), *err_string);
-    }
 
     // Calculate all conflicting entries and enforce Rule #5.
     if (const auto err_string{GetEntriesForConflicts(tx, m_pool, ws.m_iters_conflicting, m_subpackage.m_all_conflicts)}) {
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
                              strprintf("too many potential replacements%s", ws.m_sibling_eviction ? " (including sibling eviction)" : ""), *err_string);
-    }
-    // Enforce Rule #2.
-    if (const auto err_string{HasNoNewUnconfirmed(tx, m_pool, m_subpackage.m_all_conflicts)}) {
-        // Sibling eviction is only done for v3 transactions, which cannot have multiple ancestors.
-        Assume(!ws.m_sibling_eviction);
-        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
-                             strprintf("replacement-adds-unconfirmed%s", ws.m_sibling_eviction ? " (including sibling eviction)" : ""), *err_string);
     }
 
     // Check if it's economically rational to mine this transaction rather than the ones it
@@ -1114,6 +1022,7 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         m_subpackage.m_conflicting_fees += it->GetModifiedFee();
         m_subpackage.m_conflicting_size += it->GetTxSize();
     }
+
     if (const auto err_string{PaysForRBF(m_subpackage.m_conflicting_fees, ws.m_modified_fees, ws.m_vsize,
                                          m_pool.m_opts.incremental_relay_feerate, hash)}) {
         // Even though this is a fee-related failure, this result is TX_MEMPOOL_POLICY, not
@@ -1122,6 +1031,12 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
                              strprintf("insufficient fee%s", ws.m_sibling_eviction ? " (including sibling eviction)" : ""), *err_string);
     }
+
+    if (const auto err_string{ImprovesFeerateDiagram(m_pool, ws.m_iters_conflicting, m_subpackage.m_all_conflicts, {{&(*ws.m_entry), ws.m_modified_fees}})}) {
+        // If we can't calculate a feerate, it's because the cluster size limits were hit.
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "replacement-failed", err_string->second);
+    }
+
     return true;
 }
 
@@ -1216,6 +1131,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
 
     // Remove conflicting transactions from the mempool
+    CTxMemPool::Entries all_removals;
     for (CTxMemPool::txiter it : m_subpackage.m_all_conflicts)
     {
         LogPrint(BCLog::MEMPOOL, "replacing tx %s (wtxid=%s) with %s (wtxid=%s) for %s additional fees, %d delta bytes\n",
@@ -1235,13 +1151,14 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
                 entry->GetFee()
         );
         m_subpackage.m_replaced_transactions.push_back(it->GetSharedTx());
+        all_removals.push_back(it);
     }
-    m_pool.RemoveStaged(m_subpackage.m_all_conflicts, false, MemPoolRemovalReason::REPLACED);
+    m_pool.RemoveStaged(all_removals, MemPoolRemovalReason::REPLACED);
     // Don't attempt to process the same conflicts repeatedly during subpackage evaluation:
     // they no longer exist on subsequent calls to Finalize() post-RemoveStaged
     m_subpackage.m_all_conflicts.clear();
     // Store transaction in memory
-    m_pool.addUnchecked(*entry, ws.m_ancestors);
+    m_pool.addUnchecked(*entry);
 
     // trim mempool and check if tx was trimmed
     // If we are validating a package, don't trim here because we could evict a previous transaction
@@ -1283,21 +1200,6 @@ bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& 
                                             ws.m_ptx->GetHash().ToString()));
         }
 
-        // Re-calculate mempool ancestors to call addUnchecked(). They may have changed since the
-        // last calculation done in PreChecks, since package ancestors have already been submitted.
-        {
-            auto ancestors{m_pool.CalculateMemPoolAncestors(*ws.m_entry, m_pool.m_opts.limits)};
-            if(!ancestors) {
-                results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
-                // Since PreChecks() and PackageMempoolChecks() both enforce limits, this should never fail.
-                Assume(false);
-                all_submitted = false;
-                package_state.Invalid(PackageValidationResult::PCKG_MEMPOOL_ERROR,
-                                    strprintf("BUG! Mempool ancestors or descendants were underestimated: %s",
-                                                ws.m_ptx->GetHash().ToString()));
-            }
-            ws.m_ancestors = std::move(ancestors).value_or(ws.m_ancestors);
-        }
         // If we call LimitMempoolSize() for each individual Finalize(), the mempool will not take
         // the transaction's descendant feerate into account because it hasn't seen them yet. Also,
         // we risk evicting a transaction that a subsequent package transaction depends on. Instead,
@@ -1362,6 +1264,8 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     }
 
     if (m_subpackage.m_rbf && !ReplacementChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
+
+    if (!m_subpackage.m_rbf && !ClusterSizeChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     // Perform the inexpensive checks first and avoid hashing and signature verification unless
     // those checks pass, to mitigate CPU exhaustion denial-of-service attacks.
@@ -1445,7 +1349,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     // At this point we have all in-mempool ancestors, and we know every transaction's vsize.
     // Run the v3 checks on the package.
     for (Workspace& ws : workspaces) {
-        if (auto err{PackageV3Checks(ws.m_ptx, ws.m_vsize, txns, ws.m_ancestors)}) {
+        CTxMemPool::Entries parents = m_pool.CalculateParentsOf(*ws.m_ptx);
+        if (auto err{PackageV3Checks(m_pool, ws.m_ptx, ws.m_vsize, txns, parents)}) {
             package_state.Invalid(PackageValidationResult::PCKG_POLICY, "v3-violation", err.value());
             return PackageMempoolAcceptResult(package_state, {});
         }
